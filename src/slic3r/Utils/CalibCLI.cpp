@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <clocale>
+#include <cstdlib>
+#include <string>
 
 #include <boost/log/trivial.hpp>
 #include <boost/format.hpp>
@@ -132,6 +135,30 @@ void cli_apply_flowrate_calib(Model &model, DynamicPrintConfig &full_config, con
         mo->config.set_key_value("top_surface_speed", new ConfigOptionFloat(top_surface_speed));
         mo->config.set_key_value("seam_slope_type", new ConfigOptionEnum<SeamScarfType>(SeamScarfType::None));
         mo->config.set_key_value("gap_fill_target", new ConfigOptionEnum<GapFillTarget>(GapFillTarget::gftNowhere));
+        mo->config.set_key_value("calib_flowrate_topinfill_special_order", new ConfigOptionBool(true));
+
+        //ORCA: parse the per-block flow rate modifier from the object name (filename format
+        //      "flowrate_xxx"). 'm' prefix means negative (e.g. "flowrate_m0.01" → -0.01).
+        //      print_flow_ratio differs between linear (YOLO) and non-linear (Pass1/Pass2):
+        //        linear:     (cur_flowrate + modifier) / cur_flowrate
+        //        non-linear: 1.0 + modifier / 100
+        //      Identical to the GUI logic at Plater.cpp:13044-13065.
+        std::string obj_name = mo->name;
+        if (obj_name.length() > 9) {
+            obj_name = obj_name.substr(9);
+            if (!obj_name.empty() && obj_name[0] == 'm')
+                obj_name[0] = '-';
+            const std::string saved_locale = std::setlocale(LC_NUMERIC, nullptr);
+            std::setlocale(LC_NUMERIC, "C");
+            float modifier = 1.0f;
+            try { modifier = std::stof(obj_name); } catch (...) {}
+            std::setlocale(LC_NUMERIC, saved_locale.c_str());
+
+            const float pfr = params.is_linear
+                ? (static_cast<float>(cur_flowrate) + modifier) / static_cast<float>(cur_flowrate)
+                : 1.0f + modifier / 100.0f;
+            mo->config.set_key_value("print_flow_ratio", new ConfigOptionFloat(pfr));
+        }
 
         //ORCA: brim toggle from PR #13548 — when enabled, switch each block-pair object to an outer
         //      brim with the requested width and zero object-gap (matching the dialog's behavior).
@@ -142,7 +169,16 @@ void cli_apply_flowrate_calib(Model &model, DynamicPrintConfig &full_config, con
         }
     }
 
-    //ORCA: printer-level override mirrors the GUI implementation.
+    //ORCA: print-config overrides — the GUI applies these at the END of
+    //      adjust_settings_for_flowrate_calib (Plater.cpp:13117-13121, plus
+    //      :13042 max_volumetric_extrusion_rate_slope inside the per-object loop).
+    //      These must run after the per-object loop so they're not silently shadowed.
+    full_config.set_key_value("layer_height", new ConfigOptionFloat(layer_height));
+    full_config.set_key_value("initial_layer_print_height", new ConfigOptionFloat(first_layer_h));
+    full_config.set_key_value("alternate_extra_wall", new ConfigOptionBool(false));
+    full_config.set_key_value("reduce_crossing_wall", new ConfigOptionBool(true));
+    full_config.set_key_value("enable_wrapping_detection", new ConfigOptionBool(false));
+    full_config.set_key_value("max_volumetric_extrusion_rate_slope", new ConfigOptionFloat(0));
     full_config.set_key_value("resonance_avoidance", new ConfigOptionBool(false));
 
     BOOST_LOG_TRIVIAL(info) << boost::format("cli_apply_flowrate_calib: pass=%1% is_linear=%2% pattern=%3% brim=%4% objects=%5%")
