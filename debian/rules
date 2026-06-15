@@ -1,0 +1,78 @@
+#!/usr/bin/make -f
+
+# Use a stamp file so dpkg-buildpackage knows the build phase ran.
+export DH_VERBOSE = 1
+
+%:
+	dh $@ --buildsystem=none
+
+# Configure: nothing to do — we drive everything via build_linux.sh
+override_dh_auto_configure:
+	@echo "Skipping dh_auto_configure (handled by build_linux.sh)"
+
+# Build: assume the slicer has been compiled already.
+# For first-time setup the user runs ./build_linux.sh -dsi (deps + slicer + AppImage)
+# For monthly rebuilds: ./build_linux.sh -si (skips deps build)
+# This rule simply checks the artefacts are in place AND fresher than any src/ source file.
+override_dh_auto_build:
+	@if [ ! -f build/package/orca-slicer ] || [ ! -f build/package/bin/orca-slicer ]; then \
+		echo "ERROR: build/package/ is missing or incomplete."; \
+		echo "Run ./build_linux.sh -dsi (first time) or ./build_linux.sh -si (subsequent) before dpkg-buildpackage."; \
+		exit 1; \
+	fi
+	# Freshness guard: a bare `cmake --build build` updates build/src/<config>/orca-slicer but
+	# does NOT refresh build/package/, so dpkg-buildpackage would silently ship a stale binary
+	# (we hit this on 2026-05-18 - the 18.2-1 .deb was packaged without the day's CLI patches).
+	# Fail loudly if any src/*.{cpp,hpp} is newer than build/package/bin/orca-slicer.
+	@newer=$$(find src \( -name '*.cpp' -o -name '*.hpp' \) -newer build/package/bin/orca-slicer 2>/dev/null | head -5); \
+	if [ -n "$$newer" ]; then \
+		echo "ERROR: build/package/bin/orca-slicer is older than these source files:"; \
+		echo "$$newer" | sed 's/^/  /'; \
+		echo ""; \
+		echo "The .deb would ship a stale binary. Refresh the install staging dir with:"; \
+		echo "    ./build_linux.sh -si"; \
+		echo "then re-run dpkg-buildpackage."; \
+		exit 1; \
+	fi
+
+# Install: stage everything under /opt/orcaslicer-dev/, plus standard /usr paths.
+override_dh_auto_install:
+	# Self-contained app tree under /opt
+	install -d debian/orcaslicer-dev/opt/orcaslicer-dev
+	cp -a build/package/. debian/orcaslicer-dev/opt/orcaslicer-dev/
+	# Launcher symlink in /usr/bin
+	install -d debian/orcaslicer-dev/usr/bin
+	ln -sf /opt/orcaslicer-dev/orca-slicer debian/orcaslicer-dev/usr/bin/orcaslicer-dev
+	# Desktop file
+	install -d debian/orcaslicer-dev/usr/share/applications
+	install -m 644 debian/orcaslicer-dev.desktop debian/orcaslicer-dev/usr/share/applications/orcaslicer-dev.desktop
+	# Icon (192x192 only — same one upstream uses for the AppImage)
+	install -d debian/orcaslicer-dev/usr/share/icons/hicolor/192x192/apps
+	install -m 644 resources/images/OrcaSlicer_192px.png \
+		debian/orcaslicer-dev/usr/share/icons/hicolor/192x192/apps/orcaslicer-dev.png
+
+# No tests
+override_dh_auto_test:
+
+# Clean: only nuke debhelper artefacts; preserve build/ and deps/ so monthly rebuilds stay incremental.
+override_dh_auto_clean:
+	rm -rf debian/orcaslicer-dev debian/.debhelper debian/files debian/debhelper-build-stamp
+	@echo "Note: build/ and deps/ are intentionally preserved for incremental rebuilds."
+	@echo "      To force a clean compile, run: rm -rf build deps/build"
+
+# dh_dwz chokes on orca-slicer's debug info ("Too many DIEs, not optimizing")
+# and bundled libs lack .debug_info — skip the dwz pass entirely.
+override_dh_dwz:
+
+# No automatic dbgsym package — keeps the package count to one.
+override_dh_strip:
+	dh_strip --no-automatic-dbgsym
+
+# Bundled libs in /opt/orcaslicer-dev/lib/orca-runtime/ are private to this
+# package — do not advertise them via shlibs, and do not let dh_shlibdeps
+# treat them as system shared libraries.
+override_dh_makeshlibs:
+	dh_makeshlibs -X/orca-runtime/
+
+override_dh_shlibdeps:
+	dh_shlibdeps -X/orca-runtime/
