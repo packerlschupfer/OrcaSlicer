@@ -10638,6 +10638,18 @@ CLIActionsConfigDef::CLIActionsConfigDef()
     def->cli_params = "option";
     def->set_default_value(new ConfigOptionInt(0));
 
+    //ORCA: CLI calibration generators. When set, the CLI loads the corresponding calibration model
+    //      from resources/calib/ and applies the same per-object config overrides the GUI Calibration
+    //      Wizard would, then falls through to --slice. v1 supports the flow-rate tests; temperature
+    //      tower and pressure advance tower share the same dispatch and follow in a v2.
+    def = this->add("calibrate_type", coString);
+    def->label = L("Calibration type");
+    def->tooltip = L("Run a calibration generator instead of slicing a user-supplied model. "
+                     "One of: flow-yolo-recommended, flow-yolo-perfectionist, flow-pass1, flow-pass2.");
+    def->cli = "calibrate-type";
+    def->cli_params = "name";
+    def->set_default_value(new ConfigOptionString(""));
+
     def = this->add("help", coBool);
     def->label = L("Help");
     def->tooltip = L("Show command help.");
@@ -10875,6 +10887,33 @@ CLIMiscConfigDef::CLIMiscConfigDef()
     def->tooltip = L("Load filament settings from the specified file list.");
     def->cli_params = "\"filament1.json;filament2.json;...\"";
     def->set_default_value(new ConfigOptionStrings());
+
+    //ORCA: sub-flags for --calibrate-type flow-* tests. Mirror the Flow Rate Calibration dialog's
+    //      pattern selector and the brim toggle introduced by PR #13548.
+    def = this->add("flow_pattern", coString);
+    def->label = L("Flow calibration top pattern");
+    def->tooltip = L("Top-surface infill pattern for flow-rate calibration plates. "
+                     "One of: archimedean-chords (default), monotonic-line.");
+    def->cli_params = "name";
+    def->set_default_value(new ConfigOptionString("archimedean-chords"));
+
+    def = this->add("flow_brim", coBool);
+    def->label = L("Flow calibration outer brim");
+    def->tooltip = L("Enable the optional outer brim around each flow-rate block-pair (PR #13548). "
+                     "When enabled, block-pair spacing is auto-widened so brims don't merge.");
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("flow_brim_width", coFloat);
+    def->label = L("Flow calibration brim width");
+    def->tooltip = L("Brim width in mm. Only used when --flow-brim is true.");
+    def->cli_params = "mm";
+    def->set_default_value(new ConfigOptionFloat(2.0));
+
+    def = this->add("flow_brim_gap", coFloat);
+    def->label = L("Flow calibration brim extra gap");
+    def->tooltip = L("Extra gap added between adjacent block-pair brims in mm. Only used when --flow-brim is true.");
+    def->cli_params = "mm";
+    def->set_default_value(new ConfigOptionFloat(0.0));
 
     def = this->add("skip_objects", coInts);
     def->label = L("Skip Objects");

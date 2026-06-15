@@ -51,6 +51,7 @@ using namespace nlohmann;
 #include "libslic3r/AppConfig.hpp"
 #include "libslic3r/Config.hpp"
 #include "libslic3r/PresetBundle.hpp"
+#include "slic3r/Utils/CalibCLI.hpp"
 #include "libslic3r/Geometry.hpp"
 #include "libslic3r/GCode.hpp"
 #include "libslic3r/GCode/PostProcessor.hpp"
@@ -1484,6 +1485,50 @@ int CLI::run(int argc, char **argv)
     ConfigOptionInt* slice_option = m_config.option<ConfigOptionInt>("slice");
     if (slice_option)
         plate_to_slice = slice_option->value;
+
+    //ORCA: --calibrate-type handling. If set, treat the calibration resource model as the input
+    //      file (prepend to m_input_files so the existing model-loader picks it up at L1628). The
+    //      per-object config overrides equivalent to the GUI wizard's adjust_settings_for_flowrate_calib
+    //      are applied later, after m_print_config has finished merging the user's --load-settings /
+    //      --load-filaments chain (see the second injection point below).
+    Slic3r::CLICalibType cli_calib_type = Slic3r::CLICalibType::NoCalib;
+    Slic3r::CLIFlowRateParams cli_flow_params;
+    if (ConfigOptionString *opt = m_config.option<ConfigOptionString>("calibrate_type"); opt && !opt->value.empty()) {
+        cli_calib_type = Slic3r::cli_calib_type_from_string(opt->value);
+        if (cli_calib_type == Slic3r::CLICalibType::NoCalib) {
+            boost::nowide::cerr << "Invalid --calibrate-type value: " << opt->value
+                << ". Expected one of: flow-yolo-recommended, flow-yolo-perfectionist, flow-pass1, flow-pass2." << std::endl;
+            record_exit_reson(outfile_dir, CLI_INVALID_PARAMS, 0, cli_errors[CLI_INVALID_PARAMS], sliced_info);
+            flush_and_exit(CLI_INVALID_PARAMS);
+        }
+        const std::string resource = Slic3r::cli_calib_resource_path(cli_calib_type);
+        if (resource.empty() || !boost::filesystem::exists(resource)) {
+            boost::nowide::cerr << "Calibration resource missing: " << resource << std::endl;
+            record_exit_reson(outfile_dir, CLI_FILE_NOTFOUND, 0, cli_errors[CLI_FILE_NOTFOUND], sliced_info);
+            flush_and_exit(CLI_FILE_NOTFOUND);
+        }
+        if (!m_input_files.empty()) {
+            BOOST_LOG_TRIVIAL(warning) << "--calibrate-type set; ignoring " << m_input_files.size()
+                << " user-supplied input file(s) — the calibration resource model is used instead.";
+        }
+        m_input_files.clear();
+        m_input_files.push_back(resource);
+
+        // Resolve flow-rate sub-flags
+        Slic3r::cli_flowrate_params_for_type(cli_calib_type, cli_flow_params.pass, cli_flow_params.is_linear);
+        if (ConfigOptionString *p = m_config.option<ConfigOptionString>("flow_pattern"); p)
+            cli_flow_params.pattern = Slic3r::cli_parse_flow_pattern(p->value);
+        if (ConfigOptionBool *b = m_config.option<ConfigOptionBool>("flow_brim"); b)
+            cli_flow_params.brim_enabled = b->value;
+        if (ConfigOptionFloat *w = m_config.option<ConfigOptionFloat>("flow_brim_width"); w)
+            cli_flow_params.brim_width = w->value;
+        if (ConfigOptionFloat *g = m_config.option<ConfigOptionFloat>("flow_brim_gap"); g)
+            cli_flow_params.brim_extra_gap = g->value;
+        // Force --slice 0 if the user didn't pass one explicitly — calibration is meaningless without a slice action.
+        if (plate_to_slice <= 0 && !slice_option)
+            plate_to_slice = 0; // already 0; just being explicit
+        BOOST_LOG_TRIVIAL(info) << "--calibrate-type=" << opt->value << " resolved to resource " << resource;
+    }
 
     ConfigOptionBool* normative_check_option = m_config.option<ConfigOptionBool>("normative_check");
     if (normative_check_option)
@@ -3480,6 +3525,63 @@ int CLI::run(int argc, char **argv)
                 }
             }
         }
+    }
+
+    //ORCA: --calibrate-type post-merge application. m_print_config now reflects the full merged
+    //      user --load-settings + --load-filaments chain, and m_models contains the calibration
+    //      resource we injected earlier. Apply the same per-object overrides the GUI Calibration
+    //      Wizard would (Plater::adjust_settings_for_flowrate_calib), then fall through to slicing
+    //      normally. Also center the model on the bed to match what GUI's add_model produces
+    //      (the GUI loads then applies a centralize-on-plate translation; the CLI's input-file
+    //      loader doesn't, so without this step the calibration blocks land off-bed-center).
+    if (cli_calib_type != Slic3r::CLICalibType::NoCalib) {
+        if (m_models.empty() || m_models[0].objects.empty()) {
+            boost::nowide::cerr << "Calibration model load failed — m_models empty after loading "
+                << Slic3r::cli_calib_resource_path(cli_calib_type) << std::endl;
+            record_exit_reson(outfile_dir, CLI_DATA_FILE_ERROR, 0, cli_errors[CLI_DATA_FILE_ERROR], sliced_info);
+            flush_and_exit(CLI_DATA_FILE_ERROR);
+        }
+        Slic3r::cli_apply_flowrate_calib(m_models[0], m_print_config, cli_flow_params);
+
+        //ORCA: center the calibration model on the bed (matches the GUI's add_model behavior).
+        //      Compute the bed center from current_printable_area (loaded earlier), then translate
+        //      every object's instance offset so that the combined bounding box centroid lands at
+        //      the bed center. Without this step, the calibration blocks load at their .3mf
+        //      geometric coordinates (X: -37 to 86) which falls partially off the printable area.
+        Vec2d bed_center(125, 110); // fallback if printable area lookup fails
+        if (auto *area_opt = m_print_config.option<ConfigOptionPoints>("printable_area"); area_opt && area_opt->values.size() >= 4) {
+            const auto &pts = area_opt->values;
+            double minx = pts[0](0), maxx = pts[0](0), miny = pts[0](1), maxy = pts[0](1);
+            for (const auto &p : pts) {
+                minx = std::min(minx, p(0)); maxx = std::max(maxx, p(0));
+                miny = std::min(miny, p(1)); maxy = std::max(maxy, p(1));
+            }
+            bed_center = Vec2d((minx + maxx) * 0.5, (miny + maxy) * 0.5);
+        }
+        // Compute combined bounding box of all model object instances
+        BoundingBoxf3 all_bb;
+        bool first = true;
+        for (ModelObject *mo : m_models[0].objects) {
+            if (!mo || mo->instances.empty()) continue;
+            BoundingBoxf3 obj_bb = mo->instance_bounding_box(0);
+            if (first) { all_bb = obj_bb; first = false; } else { all_bb.merge(obj_bb); }
+        }
+        if (!first) {
+            Vec3d model_center = all_bb.center();
+            Vec3d translate(bed_center.x() - model_center.x(), bed_center.y() - model_center.y(), 0.0);
+            for (ModelObject *mo : m_models[0].objects) {
+                for (ModelInstance *inst : mo->instances) {
+                    inst->set_offset(inst->get_offset() + translate);
+                }
+            }
+            BOOST_LOG_TRIVIAL(info) << boost::format("calibrate-type: centered model on bed at (%1%, %2%), translate=(%3%, %4%)")
+                % bed_center.x() % bed_center.y() % translate.x() % translate.y();
+        }
+        //ORCA: prevent the CLI's default arrange (L5097) from rearranging the calibration blocks
+        //      into a 3x4 instead of the 4x3 grid the GUI produces. The calibration .3mf is a
+        //      bare geometry-only file (no project_settings.config), so is_bbl_3mf stays false,
+        //      and need_arrange stays at its default of true. Force false here.
+        need_arrange = false;
     }
 
     //compute the flush volume
@@ -5695,6 +5797,11 @@ int CLI::run(int argc, char **argv)
             this->print_help(true, ptSLA);
         } else if (opt_key == "pipe") {
             //already processed before
+        } else if (opt_key == "calibrate_type") {
+            //ORCA: --calibrate-type is processed at the top of run() — the resource model is
+            //      already injected into m_input_files and per-object overrides will be applied
+            //      via cli_apply_flowrate_calib once m_print_config finishes merging. The actual
+            //      G-code generation falls through to the --slice handler below as normal.
         } else if (opt_key == "load_slicedata") {
             load_slicedata = true;
             load_slice_data_dir = m_config.opt_string(opt_key);
