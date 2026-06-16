@@ -10963,6 +10963,33 @@ CLIMiscConfigDef::CLIMiscConfigDef()
                      "(metadata comments in the gcode already document zone coordinates). Default OFF.");
     def->set_default_value(new ConfigOptionBool(false));
 
+    def = this->add("zcal_frame", coBool);
+    def->label = L("Z-cal peelable frame");
+    def->tooltip = L("Add a multi-layer structural frame OUTSIDE the fiducial bbox so the print "
+                     "peels off the textured PEI sheet as one piece without tearing the single-layer "
+                     "calibration surface. Lets the operator scan the print directly on the flatbed "
+                     "glass (bypassing the sheet's depth-of-field penalty). Calibration zones / "
+                     "fiducials / scale bar / corner-C loops stay strictly 1-layer. Default ON.");
+    def->set_default_value(new ConfigOptionBool(true));
+
+    def = this->add("zcal_frame_layers", coInt);
+    def->label = L("Z-cal frame layers");
+    def->tooltip = L("Frame height in layers. 2 × 0.20mm = 0.40mm is peelable but trivial to remove by hand. Default 2.");
+    def->cli_params = "N";
+    def->set_default_value(new ConfigOptionInt(2));
+
+    def = this->add("zcal_frame_width", coFloat);
+    def->label = L("Z-cal frame width");
+    def->tooltip = L("Frame thickness in mm. 3mm gives 4 perimeters at 0.45mm line width plus a bit of fill. Default 3.0.");
+    def->cli_params = "mm";
+    def->set_default_value(new ConfigOptionFloat(3.0));
+
+    def = this->add("zcal_frame_margin", coFloat);
+    def->label = L("Z-cal frame margin");
+    def->tooltip = L("Gap from fiducial outer bbox to frame inner edge in mm. Default 5.0.");
+    def->cli_params = "mm";
+    def->set_default_value(new ConfigOptionFloat(5.0));
+
     //ORCA: sub-flags for --calibrate-type temp-tower / vol-speed-tower / pa-tower.
     def = this->add("temp_tower_start", coFloat);
     def->label = L("Temp tower start (°C)");
