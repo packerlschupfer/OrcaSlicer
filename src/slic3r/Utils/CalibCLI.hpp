@@ -3,6 +3,7 @@
 
 #include <string>
 
+#include "libslic3r/calib.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/PrintConfig.hpp"
 
@@ -28,6 +29,9 @@ enum class CLICalibType {
     FlowRate_Pass1,
     FlowRate_Pass2,
     ZOffsetPattern,
+    TempTower,
+    VolSpeedTower,
+    PATower,
 };
 
 // Maps a CLI string ("flow-yolo-recommended", etc.) to the enum + a 3MF resource path.
@@ -94,6 +98,42 @@ void cli_build_zcal_pattern(Model &model, DynamicPrintConfig &full_config, const
 // to convert model-space coordinates to bed coordinates before writing. Returns true on success.
 bool cli_inject_zcal_metadata(const std::string &gcode_path, const CLIZCalParams &params,
                               const DynamicPrintConfig &full_config);
+
+// ============================================================
+// Tower-shaped calibration tests (Temperature, Volumetric Speed, PA Tower).
+// ============================================================
+//
+// All three use a pre-built tower mesh in resources/calib/ which the slicer modulates per-layer
+// via Print::set_calib_params() — e.g. for the temp tower the gcode emitter inserts M104/M109
+// commands at every 10mm Z transition; for the PA tower it inserts M572 (SET_PRESSURE_ADVANCE);
+// for the vol-speed tower it ramps speed.
+//
+// The cli_apply_* functions handle the geometry side of what the GUI's Plater::calib_temp /
+// calib_max_vol_speed / _calib_pa_tower do:
+//   - load the resource mesh into the Model (the input-file pipeline does this)
+//   - cut the tower at the top (and for temp, also the bottom) to match the user's range
+//   - scale by nozzle ratio where the GUI does it
+//   - apply per-object and print/filament config overrides line-for-line from the GUI
+//
+// Caller (OrcaSlicer.cpp) is responsible for calling Print::set_calib_params() with the result
+// of cli_tower_get_calib_params() before slicing — that's what makes the test "active" at
+// gcode-generation time.
+
+struct CLITowerParams {
+    double start = 0.0;  // tower start value (T_start °C / vs_start mm³/s / pa_start s)
+    double end   = 0.0;  // tower end   value
+    double step  = 0.0;  // step size between blocks (ignored for temp tower — fixed at 5°C)
+};
+
+void cli_apply_temp_tower(Model &model, DynamicPrintConfig &full_config, const CLITowerParams &params);
+void cli_apply_vol_speed_tower(Model &model, DynamicPrintConfig &full_config, const CLITowerParams &params);
+void cli_apply_pa_tower(Model &model, DynamicPrintConfig &full_config, const CLITowerParams &params);
+
+// Translate the CLI tower params to the Calib_Params the Print engine consumes via
+// set_calib_params(). For vol-speed tower this internally converts mm³/s → mm/s using the
+// effective layer flow (mm³/mm). Returns true on success; out is left default on failure.
+bool cli_tower_get_calib_params(CLICalibType type, const CLITowerParams &params,
+                                const DynamicPrintConfig &full_config, Calib_Params &out);
 
 }
 
