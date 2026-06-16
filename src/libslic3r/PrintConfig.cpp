@@ -10963,6 +10963,56 @@ CLIMiscConfigDef::CLIMiscConfigDef()
                      "(metadata comments in the gcode already document zone coordinates). Default OFF.");
     def->set_default_value(new ConfigOptionBool(false));
 
+    //ORCA: sub-flags for --calibrate-type temp-tower / vol-speed-tower / pa-tower.
+    def = this->add("temp_tower_start", coFloat);
+    def->label = L("Temp tower start (°C)");
+    def->tooltip = L("Temperature of the bottom (hottest) block of the temp tower in °C. The tower "
+                     "loses 5°C per block going up. Default 240.");
+    def->cli_params = "C";
+    def->set_default_value(new ConfigOptionFloat(240.0));
+
+    def = this->add("temp_tower_end", coFloat);
+    def->label = L("Temp tower end (°C)");
+    def->tooltip = L("Temperature of the top (coolest) block of the temp tower in °C. Default 195.");
+    def->cli_params = "C";
+    def->set_default_value(new ConfigOptionFloat(195.0));
+
+    def = this->add("vs_tower_start", coFloat);
+    def->label = L("Vol-speed tower start (mm³/s)");
+    def->tooltip = L("Bottom (slowest) volumetric flow rate for the max-volumetric-speed tower in mm³/s. Default 5.");
+    def->cli_params = "mm3/s";
+    def->set_default_value(new ConfigOptionFloat(5.0));
+
+    def = this->add("vs_tower_end", coFloat);
+    def->label = L("Vol-speed tower end (mm³/s)");
+    def->tooltip = L("Top (fastest) volumetric flow rate for the max-volumetric-speed tower in mm³/s. Default 20.");
+    def->cli_params = "mm3/s";
+    def->set_default_value(new ConfigOptionFloat(20.0));
+
+    def = this->add("vs_tower_step", coFloat);
+    def->label = L("Vol-speed tower step (mm³/s)");
+    def->tooltip = L("Step size between blocks of the vol-speed tower in mm³/s. Default 0.5.");
+    def->cli_params = "mm3/s";
+    def->set_default_value(new ConfigOptionFloat(0.5));
+
+    def = this->add("pa_tower_start", coFloat);
+    def->label = L("PA tower start (s)");
+    def->tooltip = L("Bottom pressure-advance value for the PA tower in seconds. Default 0.0.");
+    def->cli_params = "s";
+    def->set_default_value(new ConfigOptionFloat(0.0));
+
+    def = this->add("pa_tower_end", coFloat);
+    def->label = L("PA tower end (s)");
+    def->tooltip = L("Top pressure-advance value for the PA tower in seconds. Default 0.08 for DD, 0.5 for Bowden.");
+    def->cli_params = "s";
+    def->set_default_value(new ConfigOptionFloat(0.08));
+
+    def = this->add("pa_tower_step", coFloat);
+    def->label = L("PA tower step (s)");
+    def->tooltip = L("Step size between PA tower blocks in seconds. Default 0.002.");
+    def->cli_params = "s";
+    def->set_default_value(new ConfigOptionFloat(0.002));
+
     def = this->add("skip_objects", coInts);
     def->label = L("Skip Objects");
     def->tooltip = L("Skip some objects in this print.");

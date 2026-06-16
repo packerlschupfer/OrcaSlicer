@@ -1494,11 +1494,12 @@ int CLI::run(int argc, char **argv)
     Slic3r::CLICalibType cli_calib_type = Slic3r::CLICalibType::NoCalib;
     Slic3r::CLIFlowRateParams cli_flow_params;
     Slic3r::CLIZCalParams     cli_zcal_params;
+    Slic3r::CLITowerParams    cli_tower_params;
     if (ConfigOptionString *opt = m_config.option<ConfigOptionString>("calibrate_type"); opt && !opt->value.empty()) {
         cli_calib_type = Slic3r::cli_calib_type_from_string(opt->value);
         if (cli_calib_type == Slic3r::CLICalibType::NoCalib) {
             boost::nowide::cerr << "Invalid --calibrate-type value: " << opt->value
-                << ". Expected one of: flow-yolo-recommended, flow-yolo-perfectionist, flow-pass1, flow-pass2, z-offset-pattern." << std::endl;
+                << ". Expected one of: flow-yolo-recommended, flow-yolo-perfectionist, flow-pass1, flow-pass2, z-offset-pattern, temp-tower, vol-speed-tower, pa-tower." << std::endl;
             record_exit_reson(outfile_dir, CLI_INVALID_PARAMS, 0, cli_errors[CLI_INVALID_PARAMS], sliced_info);
             flush_and_exit(CLI_INVALID_PARAMS);
         }
@@ -1528,6 +1529,26 @@ int CLI::run(int argc, char **argv)
                 cli_zcal_params.scale_bar = b->value;
             if (ConfigOptionBool *b = m_config.option<ConfigOptionBool>("zcal_zone_labels"); b)
                 cli_zcal_params.zone_labels = b->value;
+        } else if (cli_calib_type == Slic3r::CLICalibType::TempTower) {
+            if (ConfigOptionFloat *s = m_config.option<ConfigOptionFloat>("temp_tower_start"); s)
+                cli_tower_params.start = s->value;
+            if (ConfigOptionFloat *e = m_config.option<ConfigOptionFloat>("temp_tower_end"); e)
+                cli_tower_params.end   = e->value;
+            cli_tower_params.step = 5.0; // GUI hard-codes 5°C
+        } else if (cli_calib_type == Slic3r::CLICalibType::VolSpeedTower) {
+            if (ConfigOptionFloat *s = m_config.option<ConfigOptionFloat>("vs_tower_start"); s)
+                cli_tower_params.start = s->value;
+            if (ConfigOptionFloat *e = m_config.option<ConfigOptionFloat>("vs_tower_end"); e)
+                cli_tower_params.end   = e->value;
+            if (ConfigOptionFloat *st = m_config.option<ConfigOptionFloat>("vs_tower_step"); st)
+                cli_tower_params.step = st->value;
+        } else if (cli_calib_type == Slic3r::CLICalibType::PATower) {
+            if (ConfigOptionFloat *s = m_config.option<ConfigOptionFloat>("pa_tower_start"); s)
+                cli_tower_params.start = s->value;
+            if (ConfigOptionFloat *e = m_config.option<ConfigOptionFloat>("pa_tower_end"); e)
+                cli_tower_params.end   = e->value;
+            if (ConfigOptionFloat *st = m_config.option<ConfigOptionFloat>("pa_tower_step"); st)
+                cli_tower_params.step = st->value;
         } else {
             // Resolve flow-rate sub-flags
             Slic3r::cli_flowrate_params_for_type(cli_calib_type, cli_flow_params.pass, cli_flow_params.is_linear);
@@ -3561,10 +3582,22 @@ int CLI::run(int argc, char **argv)
             record_exit_reson(outfile_dir, CLI_DATA_FILE_ERROR, 0, cli_errors[CLI_DATA_FILE_ERROR], sliced_info);
             flush_and_exit(CLI_DATA_FILE_ERROR);
         }
-        if (cli_calib_type == Slic3r::CLICalibType::ZOffsetPattern) {
+        switch (cli_calib_type) {
+        case Slic3r::CLICalibType::ZOffsetPattern:
             Slic3r::cli_build_zcal_pattern(m_models[0], m_print_config, cli_zcal_params);
-        } else {
+            break;
+        case Slic3r::CLICalibType::TempTower:
+            Slic3r::cli_apply_temp_tower(m_models[0], m_print_config, cli_tower_params);
+            break;
+        case Slic3r::CLICalibType::VolSpeedTower:
+            Slic3r::cli_apply_vol_speed_tower(m_models[0], m_print_config, cli_tower_params);
+            break;
+        case Slic3r::CLICalibType::PATower:
+            Slic3r::cli_apply_pa_tower(m_models[0], m_print_config, cli_tower_params);
+            break;
+        default:
             Slic3r::cli_apply_flowrate_calib(m_models[0], m_print_config, cli_flow_params);
+            break;
         }
 
         //ORCA: center the calibration model on the bed (matches the GUI's add_model behavior).
@@ -6385,6 +6418,19 @@ int CLI::run(int argc, char **argv)
                                 continue;
                             try {
                                 std::string outfile_final;
+                                //ORCA: tower-shaped calibration tests (temp / vol-speed / PA) need the Print engine to
+                                //      modulate temp / speed / PA per layer at gcode-emission time. Pass the calib
+                                //      params via Print::set_calib_params before process() runs.
+                                if (cli_calib_type == Slic3r::CLICalibType::TempTower ||
+                                    cli_calib_type == Slic3r::CLICalibType::VolSpeedTower ||
+                                    cli_calib_type == Slic3r::CLICalibType::PATower) {
+                                    Slic3r::Calib_Params calib_params_for_print;
+                                    if (Slic3r::cli_tower_get_calib_params(cli_calib_type, cli_tower_params, m_print_config, calib_params_for_print)) {
+                                        print_fff->set_calib_params(calib_params_for_print);
+                                        BOOST_LOG_TRIVIAL(info) << "calibrate-type tower: set_calib_params mode=" << static_cast<int>(calib_params_for_print.mode)
+                                            << " start=" << calib_params_for_print.start << " end=" << calib_params_for_print.end << " step=" << calib_params_for_print.step;
+                                    }
+                                }
                                 BOOST_LOG_TRIVIAL(info) << "start Print::process for partplate "<<index+1 << std::endl;
 #if defined(__linux__) || defined(__LINUX__)
                                 BOOST_LOG_TRIVIAL(info) << "cli callback mgr started:  "<<g_cli_callback_mgr.m_started << std::endl;

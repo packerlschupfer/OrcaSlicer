@@ -12,6 +12,7 @@
 #include <boost/format.hpp>
 #include <boost/filesystem.hpp>
 
+#include "libslic3r/CutUtils.hpp"
 #include "libslic3r/Flow.hpp"
 #include "libslic3r/TriangleMesh.hpp"
 #include "libslic3r/Utils.hpp"
@@ -25,6 +26,9 @@ CLICalibType cli_calib_type_from_string(const std::string &name)
     if (name == "flow-pass1")               return CLICalibType::FlowRate_Pass1;
     if (name == "flow-pass2")               return CLICalibType::FlowRate_Pass2;
     if (name == "z-offset-pattern")         return CLICalibType::ZOffsetPattern;
+    if (name == "temp-tower")               return CLICalibType::TempTower;
+    if (name == "vol-speed-tower")          return CLICalibType::VolSpeedTower;
+    if (name == "pa-tower")                 return CLICalibType::PATower;
     return CLICalibType::NoCalib;
 }
 
@@ -44,6 +48,12 @@ std::string cli_calib_resource_path(CLICalibType type)
         // Use any existing 3MF as a load-pipeline placeholder; cli_build_zcal_pattern wipes
         // the Model and rebuilds from procedural primitives.
         return root + "/calib/filament_flow/Orca-LinearFlow.3mf";
+    case CLICalibType::TempTower:
+        return root + "/calib/temperature_tower/temperature_tower.drc";
+    case CLICalibType::VolSpeedTower:
+        return root + "/calib/volumetric_speed/SpeedTestStructure.drc";
+    case CLICalibType::PATower:
+        return root + "/calib/pressure_advance/tower_with_seam.drc";
     default:
         return std::string();
     }
@@ -629,6 +639,267 @@ bool cli_inject_zcal_metadata(const std::string &gcode_path, const CLIZCalParams
     out.close();
     BOOST_LOG_TRIVIAL(info) << "cli_inject_zcal_metadata: wrote metadata block to " << gcode_path;
     return true;
+}
+
+// ============================================================
+// Tower-shaped calibration tests (Temperature, Volumetric Speed, PA Tower).
+// ============================================================
+
+namespace {
+
+// Headless port of Plater::cut_horizontal (Plater.cpp:12877). The GUI uses Cut + apply_cut_object_to_model
+// which clears canvas + obj-list state we don't have on the CLI side. Here: build the cut, replace the
+// original object in model.objects with the cut result (KeepLower drops the top, KeepUpper drops the
+// bottom — matching the GUI's KeepLower/KeepUpper semantics).
+void cli_cut_horizontal(Model &model, size_t obj_idx, double z, ModelObjectCutAttributes attributes)
+{
+    if (obj_idx >= model.objects.size()) {
+        BOOST_LOG_TRIVIAL(error) << "cli_cut_horizontal: obj_idx " << obj_idx << " out of range";
+        return;
+    }
+    if (!attributes.has(ModelObjectCutAttribute::KeepUpper) && !attributes.has(ModelObjectCutAttribute::KeepLower))
+        return;
+
+    ModelObject *src = model.objects[obj_idx];
+    if (src->instances.empty()) return;
+
+    const Vec3d instance_offset = src->instances[0]->get_offset();
+    Cut cut(src, /*instance_idx=*/0,
+            Geometry::translation_transform(z * Vec3d::UnitZ() - instance_offset),
+            attributes);
+    const auto &new_objects = cut.perform_with_plane();
+    if (new_objects.empty()) {
+        BOOST_LOG_TRIVIAL(warning) << "cli_cut_horizontal: perform_with_plane produced no objects";
+        return;
+    }
+
+    // Replace the original object with the cut result(s). KeepLower-only typically yields a single
+    // ModelObject; KeepUpper-only same. KeepBoth would yield two.
+    model.delete_object(obj_idx);
+    for (ModelObject *new_obj : new_objects)
+        model.add_object(*new_obj);
+}
+
+// First-extruder nozzle diameter helper. All three towers use slot 0.
+double cli_nozzle_diameter(const DynamicPrintConfig &full_config, double fallback = 0.4)
+{
+    const ConfigOptionFloats *nd = full_config.option<ConfigOptionFloats>("nozzle_diameter");
+    if (nd && !nd->values.empty()) return nd->values[0];
+    return fallback;
+}
+
+} // anonymous
+
+//ORCA: Headless port of Plater::calib_temp (Plater.cpp:13178). Loads the temperature_tower mesh,
+//      cuts off the unused top + bottom based on params.start/end (with the 5°C step the GUI
+//      hard-codes), scales by nozzle ratio, and applies the per-object + filament + print configs
+//      line-for-line. Calls below need set_calib_params() on the Print engine before slicing.
+void cli_apply_temp_tower(Model &model, DynamicPrintConfig &full_config, const CLITowerParams &params)
+{
+    if (model.objects.empty()) {
+        BOOST_LOG_TRIVIAL(error) << "cli_apply_temp_tower: model is empty";
+        return;
+    }
+    constexpr double base_temp_tower_nozzle_diameter = 0.4;
+    constexpr double base_temp_tower_block_height    = 10.0;
+    constexpr int    base_temp_tower_temp_step       = 5;
+
+    const long start_temp = std::lround(params.start);
+
+    const double nozzle_diameter = std::max(cli_nozzle_diameter(full_config, base_temp_tower_nozzle_diameter), 0.001);
+    const double nozzle_scale    = nozzle_diameter / base_temp_tower_nozzle_diameter;
+
+    // Cut upper (drop blocks colder than params.end).
+    {
+        const auto obj_bb = model.objects[0]->bounding_box_exact();
+        const long block_count = std::lround((500 - params.end) / base_temp_tower_temp_step + 1);
+        if (block_count > 0) {
+            const double new_height = block_count * base_temp_tower_block_height - EPSILON;
+            if (new_height < obj_bb.size().z())
+                cli_cut_horizontal(model, 0, new_height, ModelObjectCutAttribute::KeepLower);
+        }
+    }
+    // Cut bottom (drop blocks hotter than params.start).
+    {
+        const auto obj_bb = model.objects[0]->bounding_box_exact();
+        const long block_count = std::lround((500 - params.start) / base_temp_tower_temp_step);
+        if (block_count > 0) {
+            const double new_height = block_count * base_temp_tower_block_height + EPSILON;
+            if (new_height < obj_bb.size().z())
+                cli_cut_horizontal(model, 0, new_height, ModelObjectCutAttribute::KeepUpper);
+        }
+    }
+
+    if (std::abs(nozzle_scale - 1.0) > EPSILON)
+        model.objects[0]->scale(nozzle_scale, nozzle_scale, nozzle_scale);
+    model.objects[0]->ensure_on_bed();
+
+    full_config.set_key_value("resonance_avoidance", new ConfigOptionBool(false));
+    full_config.set_key_value("nozzle_temperature_initial_layer", new ConfigOptionInts(1, static_cast<int>(start_temp)));
+    full_config.set_key_value("nozzle_temperature", new ConfigOptionInts(1, static_cast<int>(start_temp)));
+    full_config.set_key_value("enable_wrapping_detection", new ConfigOptionBool(false));
+    full_config.set_key_value("initial_layer_print_height", new ConfigOptionFloat(nozzle_diameter / 2));
+
+    auto &obj_cfg = model.objects[0]->config;
+    obj_cfg.set_key_value("layer_height", new ConfigOptionFloat(nozzle_diameter / 2));
+    obj_cfg.set_key_value("brim_type", new ConfigOptionEnum<BrimType>(btOuterOnly));
+    obj_cfg.set_key_value("brim_width", new ConfigOptionFloat(5.0));
+    obj_cfg.set_key_value("brim_object_gap", new ConfigOptionFloat(0.0));
+    obj_cfg.set_key_value("alternate_extra_wall", new ConfigOptionBool(false));
+    obj_cfg.set_key_value("seam_slope_type", new ConfigOptionEnum<SeamScarfType>(SeamScarfType::None));
+    obj_cfg.set_key_value("overhang_reverse", new ConfigOptionBool(false));
+    obj_cfg.set_key_value("precise_z_height", new ConfigOptionBool(false));
+
+    BOOST_LOG_TRIVIAL(info) << boost::format("cli_apply_temp_tower: start=%1%°C end=%2%°C nozzle=%3$.2fmm scale=%4$.3f")
+        % params.start % params.end % nozzle_diameter % nozzle_scale;
+}
+
+//ORCA: Headless port of Plater::calib_max_vol_speed (Plater.cpp:13258). Loads SpeedTestStructure,
+//      scales horizontally to fit the bed, cuts the upper to match the user's flow range, applies
+//      configs line-for-line. The Print engine's calib_params is set to speed (mm/s), not flow (mm³/s):
+//      that conversion is done by cli_tower_get_calib_params() before set_calib_params().
+void cli_apply_vol_speed_tower(Model &model, DynamicPrintConfig &full_config, const CLITowerParams &params)
+{
+    if (model.objects.empty()) {
+        BOOST_LOG_TRIVIAL(error) << "cli_apply_vol_speed_tower: model is empty";
+        return;
+    }
+    auto *obj = model.objects[0];
+
+    // Horizontal scale so the tower fits on the bed minus 10mm margin.
+    if (const auto *area = full_config.option<ConfigOptionPoints>("printable_area"); area && area->values.size() >= 4) {
+        BoundingBoxf bed_ext = get_extents(area->values);
+        const double scale_obj = (bed_ext.size().x() - 10.0) / obj->bounding_box_exact().size().x();
+        if (scale_obj < 1.0)
+            obj->scale(scale_obj, 1.0, 1.0);
+    }
+
+    const double nozzle_diameter = cli_nozzle_diameter(full_config);
+    const double line_width      = nozzle_diameter * 1.75;
+    const double layer_height    = nozzle_diameter * 0.8;
+
+    if (auto *max_lh = full_config.option<ConfigOptionFloats>("max_layer_height"); max_lh && !max_lh->values.empty()) {
+        if (max_lh->values[0] < layer_height) max_lh->values[0] = layer_height;
+    }
+
+    full_config.set_key_value("filament_max_volumetric_speed", new ConfigOptionFloats{200.0});
+    full_config.set_key_value("slow_down_layer_time", new ConfigOptionFloats{0.0});
+    full_config.set_key_value("resonance_avoidance", new ConfigOptionBool(false));
+    full_config.set_key_value("timelapse_type", new ConfigOptionEnum<TimelapseType>(tlTraditional));
+    full_config.set_key_value("spiral_mode", new ConfigOptionBool(true));
+    full_config.set_key_value("max_volumetric_extrusion_rate_slope", new ConfigOptionFloat(0));
+    full_config.set_key_value("enable_wrapping_detection", new ConfigOptionBool(false));
+
+    auto &obj_cfg = obj->config;
+    obj_cfg.set_key_value("enable_overhang_speed", new ConfigOptionBool(false));
+    obj_cfg.set_key_value("wall_loops", new ConfigOptionInt(1));
+    obj_cfg.set_key_value("alternate_extra_wall", new ConfigOptionBool(false));
+    obj_cfg.set_key_value("top_shell_layers", new ConfigOptionInt(0));
+    obj_cfg.set_key_value("bottom_shell_layers", new ConfigOptionInt(0));
+    obj_cfg.set_key_value("sparse_infill_density", new ConfigOptionPercent(0));
+    obj_cfg.set_key_value("outer_wall_line_width", new ConfigOptionFloatOrPercent(line_width, false));
+    obj_cfg.set_key_value("layer_height", new ConfigOptionFloat(layer_height));
+    obj_cfg.set_key_value("brim_type", new ConfigOptionEnum<BrimType>(btOuterAndInner));
+    obj_cfg.set_key_value("brim_width", new ConfigOptionFloat(5.0));
+    obj_cfg.set_key_value("brim_object_gap", new ConfigOptionFloat(0.0));
+    obj_cfg.set_key_value("precise_z_height", new ConfigOptionBool(false));
+
+    // Cut upper to the height that covers the user's range.
+    if (params.step > 0.0) {
+        const double obj_z   = obj->bounding_box_exact().size().z();
+        const double height  = (params.end - params.start + 1.0) / params.step;
+        if (height < obj_z)
+            cli_cut_horizontal(model, 0, height, ModelObjectCutAttribute::KeepLower);
+    }
+
+    BOOST_LOG_TRIVIAL(info) << boost::format("cli_apply_vol_speed_tower: start=%1% end=%2% step=%3% mm³/s, line_width=%4$.3f layer_h=%5$.3f")
+        % params.start % params.end % params.step % line_width % layer_height;
+}
+
+//ORCA: Headless port of Plater::_calib_pa_tower (Plater.cpp:12896). Loads the PA tower with seam,
+//      cuts upper based on (end-start)/step, applies the configs line-for-line. The find_optimal_PA_speed
+//      call uses CalibPressureAdvance::find_optimal_PA_speed — same helper the GUI uses.
+void cli_apply_pa_tower(Model &model, DynamicPrintConfig &full_config, const CLITowerParams &params)
+{
+    if (model.objects.empty()) {
+        BOOST_LOG_TRIVIAL(error) << "cli_apply_pa_tower: model is empty";
+        return;
+    }
+    const double nozzle_diameter = cli_nozzle_diameter(full_config);
+
+    full_config.set_key_value("enable_wrapping_detection", new ConfigOptionBool(false));
+    full_config.set_key_value("slow_down_layer_time", new ConfigOptionFloats{1.0});
+    full_config.set_key_value("resonance_avoidance", new ConfigOptionBool(false));
+    full_config.set_key_value("overhang_reverse", new ConfigOptionBool(false));
+    full_config.set_key_value("precise_z_height", new ConfigOptionBool(false));
+    full_config.set_key_value("max_volumetric_extrusion_rate_slope", new ConfigOptionFloat(0));
+
+    auto &obj_cfg = model.objects[0]->config;
+    obj_cfg.set_key_value("alternate_extra_wall", new ConfigOptionBool(false));
+
+    // GUI uses CalibPressureAdvance::find_optimal_PA_speed — reuse it verbatim.
+    const double line_width   = full_config.get_abs_value("line_width", nozzle_diameter);
+    const double layer_height = full_config.get_abs_value("layer_height");
+    const double wall_speed   = CalibPressureAdvance::find_optimal_PA_speed(full_config, line_width, layer_height, 0, 0);
+    obj_cfg.set_key_value("outer_wall_speed", new ConfigOptionFloat(wall_speed));
+    obj_cfg.set_key_value("inner_wall_speed", new ConfigOptionFloat(wall_speed));
+    obj_cfg.set_key_value("seam_position", new ConfigOptionEnum<SeamPosition>(spRear));
+    obj_cfg.set_key_value("wall_loops", new ConfigOptionInt(2));
+    obj_cfg.set_key_value("top_shell_layers", new ConfigOptionInt(0));
+    obj_cfg.set_key_value("bottom_shell_layers", new ConfigOptionInt(0));
+    obj_cfg.set_key_value("sparse_infill_density", new ConfigOptionPercent(0));
+    obj_cfg.set_key_value("brim_type", new ConfigOptionEnum<BrimType>(btEar));
+    obj_cfg.set_key_value("brim_object_gap", new ConfigOptionFloat(0.0));
+    obj_cfg.set_key_value("brim_ears_max_angle", new ConfigOptionFloat(135.0));
+    obj_cfg.set_key_value("brim_width", new ConfigOptionFloat(6.0));
+    obj_cfg.set_key_value("seam_slope_type", new ConfigOptionEnum<SeamScarfType>(SeamScarfType::None));
+
+    if (params.step > 0.0) {
+        const double new_height = std::ceil((params.end - params.start) / params.step) + 1.0;
+        const auto obj_bb = model.objects[0]->bounding_box_exact();
+        if (new_height < obj_bb.size().z())
+            cli_cut_horizontal(model, 0, new_height, ModelObjectCutAttribute::KeepLower);
+    }
+
+    BOOST_LOG_TRIVIAL(info) << boost::format("cli_apply_pa_tower: start=%1% end=%2% step=%3% s, wall_speed=%4$.2fmm/s")
+        % params.start % params.end % params.step % wall_speed;
+}
+
+bool cli_tower_get_calib_params(CLICalibType type, const CLITowerParams &params,
+                                const DynamicPrintConfig &full_config, Calib_Params &out)
+{
+    out = Calib_Params{};
+    out.start = params.start;
+    out.end   = params.end;
+    out.step  = params.step;
+
+    switch (type) {
+    case CLICalibType::TempTower:
+        out.mode = CalibMode::Calib_Temp_Tower;
+        return true;
+    case CLICalibType::VolSpeedTower: {
+        out.mode = CalibMode::Calib_Vol_speed_Tower;
+        // Convert user mm³/s to print-engine mm/s using mm³_per_mm = Flow * filament_flow_ratio (slot 0).
+        const double nozzle_diameter = cli_nozzle_diameter(full_config);
+        const double line_width      = nozzle_diameter * 1.75;
+        const double layer_height    = nozzle_diameter * 0.8;
+        double flow_ratio = 1.0;
+        if (auto *fr = full_config.option<ConfigOptionFloatsNullable>("filament_flow_ratio"); fr && !fr->values.empty())
+            flow_ratio = fr->values[0];
+        const double mm3_per_mm = Flow(line_width, layer_height, nozzle_diameter).mm3_per_mm() * flow_ratio;
+        if (mm3_per_mm > 0.0) {
+            out.start = params.start / mm3_per_mm;
+            out.end   = params.end   / mm3_per_mm;
+            out.step  = params.step  / mm3_per_mm;
+        }
+        return true;
+    }
+    case CLICalibType::PATower:
+        out.mode = CalibMode::Calib_PA_Tower;
+        return true;
+    default:
+        return false;
+    }
 }
 
 }
