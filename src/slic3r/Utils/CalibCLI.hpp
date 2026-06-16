@@ -32,6 +32,8 @@ enum class CLICalibType {
     TempTower,
     VolSpeedTower,
     PATower,
+    RetractionTower,
+    VFATower,
 };
 
 // Maps a CLI string ("flow-yolo-recommended", etc.) to the enum + a 3MF resource path.
@@ -93,12 +95,6 @@ struct CLIZCalParams {
 
 void cli_build_zcal_pattern(Model &model, DynamicPrintConfig &full_config, const CLIZCalParams &params);
 
-// Post-process the sliced gcode to inject coordinate metadata comments. Called by OrcaSlicer.cpp
-// after --slice 0 produces the gcode for the z-offset-pattern. Reads bed_center from the config
-// to convert model-space coordinates to bed coordinates before writing. Returns true on success.
-bool cli_inject_zcal_metadata(const std::string &gcode_path, const CLIZCalParams &params,
-                              const DynamicPrintConfig &full_config);
-
 // ============================================================
 // Tower-shaped calibration tests (Temperature, Volumetric Speed, PA Tower).
 // ============================================================
@@ -128,12 +124,39 @@ struct CLITowerParams {
 void cli_apply_temp_tower(Model &model, DynamicPrintConfig &full_config, const CLITowerParams &params);
 void cli_apply_vol_speed_tower(Model &model, DynamicPrintConfig &full_config, const CLITowerParams &params);
 void cli_apply_pa_tower(Model &model, DynamicPrintConfig &full_config, const CLITowerParams &params);
+void cli_apply_retraction_tower(Model &model, DynamicPrintConfig &full_config, const CLITowerParams &params);
+void cli_apply_vfa_tower(Model &model, DynamicPrintConfig &full_config, const CLITowerParams &params);
 
 // Translate the CLI tower params to the Calib_Params the Print engine consumes via
 // set_calib_params(). For vol-speed tower this internally converts mm³/s → mm/s using the
 // effective layer flow (mm³/mm). Returns true on success; out is left default on failure.
 bool cli_tower_get_calib_params(CLICalibType type, const CLITowerParams &params,
                                 const DynamicPrintConfig &full_config, Calib_Params &out);
+
+// ============================================================
+// Unified calibration outputs (gcode metadata + JSON sidecar).
+// ============================================================
+//
+// After --slice 0 produces the gcode, this hook injects calibration metadata into the gcode
+// header (machine-readable comments) AND writes a <basename>.calib.json file next to the gcode
+// describing the test in fully structured form. Both are designed to be consumed by AI-vision
+// analysis tooling that maps a scan back to test parameters without having to invert the
+// calibration math from start/end/step.
+//
+// Coverage by calib type:
+//   - Z-offset: per-zone coordinates + fiducial + scale-bar geometry (existing behavior).
+//   - Tower types: per-block table mapping Z-range → block parameter
+//     (temp °C / PA s / vol-speed mm³/s / retraction mm / VFA mm/s).
+//   - Flow-rate (YOLO + Pass): per-block list of object name + modifier + resulting flow ratio.
+//
+// Returns true if the file was written; false if gcode_path is missing or unwritable.
+bool cli_emit_calib_outputs(const std::string &gcode_path,
+                            CLICalibType type,
+                            const DynamicPrintConfig &full_config,
+                            const CLIZCalParams *zcal_params,         // non-null only for ZOffsetPattern
+                            const CLITowerParams *tower_params,       // non-null only for tower types
+                            const CLIFlowRateParams *flow_params,     // non-null only for flow types
+                            const Model *model);                       // for flow per-block listing
 
 }
 
