@@ -1549,6 +1549,20 @@ int CLI::run(int argc, char **argv)
                 cli_tower_params.end   = e->value;
             if (ConfigOptionFloat *st = m_config.option<ConfigOptionFloat>("pa_tower_step"); st)
                 cli_tower_params.step = st->value;
+        } else if (cli_calib_type == Slic3r::CLICalibType::RetractionTower) {
+            if (ConfigOptionFloat *s = m_config.option<ConfigOptionFloat>("retraction_tower_start"); s)
+                cli_tower_params.start = s->value;
+            if (ConfigOptionFloat *e = m_config.option<ConfigOptionFloat>("retraction_tower_end"); e)
+                cli_tower_params.end   = e->value;
+            if (ConfigOptionFloat *st = m_config.option<ConfigOptionFloat>("retraction_tower_step"); st)
+                cli_tower_params.step = st->value;
+        } else if (cli_calib_type == Slic3r::CLICalibType::VFATower) {
+            if (ConfigOptionFloat *s = m_config.option<ConfigOptionFloat>("vfa_tower_start"); s)
+                cli_tower_params.start = s->value;
+            if (ConfigOptionFloat *e = m_config.option<ConfigOptionFloat>("vfa_tower_end"); e)
+                cli_tower_params.end   = e->value;
+            if (ConfigOptionFloat *st = m_config.option<ConfigOptionFloat>("vfa_tower_step"); st)
+                cli_tower_params.step = st->value;
         } else {
             // Resolve flow-rate sub-flags
             Slic3r::cli_flowrate_params_for_type(cli_calib_type, cli_flow_params.pass, cli_flow_params.is_linear);
@@ -3594,6 +3608,12 @@ int CLI::run(int argc, char **argv)
             break;
         case Slic3r::CLICalibType::PATower:
             Slic3r::cli_apply_pa_tower(m_models[0], m_print_config, cli_tower_params);
+            break;
+        case Slic3r::CLICalibType::RetractionTower:
+            Slic3r::cli_apply_retraction_tower(m_models[0], m_print_config, cli_tower_params);
+            break;
+        case Slic3r::CLICalibType::VFATower:
+            Slic3r::cli_apply_vfa_tower(m_models[0], m_print_config, cli_tower_params);
             break;
         default:
             Slic3r::cli_apply_flowrate_calib(m_models[0], m_print_config, cli_flow_params);
@@ -6423,7 +6443,9 @@ int CLI::run(int argc, char **argv)
                                 //      params via Print::set_calib_params before process() runs.
                                 if (cli_calib_type == Slic3r::CLICalibType::TempTower ||
                                     cli_calib_type == Slic3r::CLICalibType::VolSpeedTower ||
-                                    cli_calib_type == Slic3r::CLICalibType::PATower) {
+                                    cli_calib_type == Slic3r::CLICalibType::PATower ||
+                                    cli_calib_type == Slic3r::CLICalibType::RetractionTower ||
+                                    cli_calib_type == Slic3r::CLICalibType::VFATower) {
                                     Slic3r::Calib_Params calib_params_for_print;
                                     if (Slic3r::cli_tower_get_calib_params(cli_calib_type, cli_tower_params, m_print_config, calib_params_for_print)) {
                                         print_fff->set_calib_params(calib_params_for_print);
@@ -6538,11 +6560,28 @@ int CLI::run(int argc, char **argv)
                                     outfile = print_fff->export_gcode(outfile, gcode_result, nullptr);
                                     time_using_cache = time_using_cache + ((long long)Slic3r::Utils::get_current_time_utc() - temp_time);
                                     BOOST_LOG_TRIVIAL(info) << "export_gcode finished: time_using_cache update to " << time_using_cache << " secs.";
-                                    //ORCA: --calibrate-type z-offset-pattern post-process — inject coordinate
-                                    //      metadata comments into the just-written gcode header so AI-vision
-                                    //      tooling can map scan pixels to test zones without inferring from geometry.
-                                    if (cli_calib_type == Slic3r::CLICalibType::ZOffsetPattern && !outfile.empty()) {
-                                        Slic3r::cli_inject_zcal_metadata(outfile, cli_zcal_params, m_print_config);
+                                    //ORCA: --calibrate-type post-process — inject calibration metadata comments
+                                    //      into the just-written gcode header AND write a <basename>.calib.json
+                                    //      sidecar with the same content in structured form. Both are consumed
+                                    //      by AI-vision tooling that maps scan pixels back to test parameters
+                                    //      without inverting start/end/step math.
+                                    if (cli_calib_type != Slic3r::CLICalibType::NoCalib && !outfile.empty()) {
+                                        const Slic3r::CLIZCalParams *zcal_for_emit =
+                                            (cli_calib_type == Slic3r::CLICalibType::ZOffsetPattern) ? &cli_zcal_params : nullptr;
+                                        const Slic3r::CLITowerParams *tower_for_emit =
+                                            (cli_calib_type == Slic3r::CLICalibType::TempTower ||
+                                             cli_calib_type == Slic3r::CLICalibType::VolSpeedTower ||
+                                             cli_calib_type == Slic3r::CLICalibType::PATower ||
+                                             cli_calib_type == Slic3r::CLICalibType::RetractionTower ||
+                                             cli_calib_type == Slic3r::CLICalibType::VFATower) ? &cli_tower_params : nullptr;
+                                        const Slic3r::CLIFlowRateParams *flow_for_emit =
+                                            (cli_calib_type == Slic3r::CLICalibType::FlowRate_YOLO_Recommended ||
+                                             cli_calib_type == Slic3r::CLICalibType::FlowRate_YOLO_Perfectionist ||
+                                             cli_calib_type == Slic3r::CLICalibType::FlowRate_Pass1 ||
+                                             cli_calib_type == Slic3r::CLICalibType::FlowRate_Pass2) ? &cli_flow_params : nullptr;
+                                        Slic3r::cli_emit_calib_outputs(outfile, cli_calib_type, m_print_config,
+                                                                       zcal_for_emit, tower_for_emit, flow_for_emit,
+                                                                       m_models.empty() ? nullptr : &m_models[0]);
                                     }
                                     if (gcode_result && gcode_result->gcode_check_result.error_code) {
                                         //found gcode error

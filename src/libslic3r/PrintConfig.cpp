@@ -11013,6 +11013,42 @@ CLIMiscConfigDef::CLIMiscConfigDef()
     def->cli_params = "s";
     def->set_default_value(new ConfigOptionFloat(0.002));
 
+    def = this->add("retraction_tower_start", coFloat);
+    def->label = L("Retraction tower start (mm)");
+    def->tooltip = L("Bottom retraction length for the retraction tower in mm. Default 0.0.");
+    def->cli_params = "mm";
+    def->set_default_value(new ConfigOptionFloat(0.0));
+
+    def = this->add("retraction_tower_end", coFloat);
+    def->label = L("Retraction tower end (mm)");
+    def->tooltip = L("Top retraction length for the retraction tower in mm. Default 2.0.");
+    def->cli_params = "mm";
+    def->set_default_value(new ConfigOptionFloat(2.0));
+
+    def = this->add("retraction_tower_step", coFloat);
+    def->label = L("Retraction tower step (mm)");
+    def->tooltip = L("Step size between retraction tower blocks in mm. Default 0.1.");
+    def->cli_params = "mm";
+    def->set_default_value(new ConfigOptionFloat(0.1));
+
+    def = this->add("vfa_tower_start", coFloat);
+    def->label = L("VFA tower start (mm/s)");
+    def->tooltip = L("Bottom outer-wall speed for the VFA tower in mm/s. Default 40.");
+    def->cli_params = "mm/s";
+    def->set_default_value(new ConfigOptionFloat(40.0));
+
+    def = this->add("vfa_tower_end", coFloat);
+    def->label = L("VFA tower end (mm/s)");
+    def->tooltip = L("Top outer-wall speed for the VFA tower in mm/s. Default 200.");
+    def->cli_params = "mm/s";
+    def->set_default_value(new ConfigOptionFloat(200.0));
+
+    def = this->add("vfa_tower_step", coFloat);
+    def->label = L("VFA tower step (mm/s)");
+    def->tooltip = L("Step size between VFA tower blocks in mm/s. Default 10.");
+    def->cli_params = "mm/s";
+    def->set_default_value(new ConfigOptionFloat(10.0));
+
     def = this->add("skip_objects", coInts);
     def->label = L("Skip Objects");
     def->tooltip = L("Skip some objects in this print.");

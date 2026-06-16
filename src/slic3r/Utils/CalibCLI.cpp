@@ -29,6 +29,8 @@ CLICalibType cli_calib_type_from_string(const std::string &name)
     if (name == "temp-tower")               return CLICalibType::TempTower;
     if (name == "vol-speed-tower")          return CLICalibType::VolSpeedTower;
     if (name == "pa-tower")                 return CLICalibType::PATower;
+    if (name == "retraction-tower")         return CLICalibType::RetractionTower;
+    if (name == "vfa-tower")                return CLICalibType::VFATower;
     return CLICalibType::NoCalib;
 }
 
@@ -54,6 +56,10 @@ std::string cli_calib_resource_path(CLICalibType type)
         return root + "/calib/volumetric_speed/SpeedTestStructure.drc";
     case CLICalibType::PATower:
         return root + "/calib/pressure_advance/tower_with_seam.drc";
+    case CLICalibType::RetractionTower:
+        return root + "/calib/retraction/retraction_tower.drc";
+    case CLICalibType::VFATower:
+        return root + "/calib/vfa/vfa.drc";
     default:
         return std::string();
     }
@@ -550,96 +556,6 @@ void cli_build_zcal_pattern(Model &model, DynamicPrintConfig &full_config, const
         % plate % zone % params.fiducials % params.scale_bar % model.objects.size();
 }
 
-// ----------------------------------------------------------------
-// Metadata-comment injection (post-processes the sliced gcode file)
-// ----------------------------------------------------------------
-//
-// Reads the gcode, finds the first non-comment / non-blank line in the header block, and
-// prepends a block of coordinate ground-truth comments. AI-vision tooling reads this block
-// instead of inferring zone positions from geometry.
-bool cli_inject_zcal_metadata(const std::string &gcode_path, const CLIZCalParams &params,
-                              const DynamicPrintConfig &full_config)
-{
-    if (!boost::filesystem::exists(gcode_path)) {
-        BOOST_LOG_TRIVIAL(error) << "cli_inject_zcal_metadata: missing gcode file " << gcode_path;
-        return false;
-    }
-
-    // Resolve bed center from printable_area to convert model coords → bed coords for the metadata.
-    Vec2d bed_center(0.0, 0.0);
-    if (const ConfigOptionPoints *p = full_config.option<ConfigOptionPoints>("printable_area"); p && !p->values.empty()) {
-        BoundingBoxf bb;
-        for (const Vec2d &v : p->values) bb.merge(v);
-        bed_center = bb.center();
-    }
-
-    const double plate    = params.plate_size;
-    const double zone     = params.zone_size;
-    const double half     = plate / 2.0;
-    const double fid_off  = half - 5.0;
-    const double corner_off = half - 12.0;
-    const double row_y    = 8.0;
-    const double zone_pitch = zone + 3.0;
-    const double scale_bar_y = -(half - 8.0);
-
-    auto bed_x = [&](double mx) { return bed_center.x() + mx; };
-    auto bed_y = [&](double my) { return bed_center.y() + my; };
-
-    std::ostringstream meta;
-    meta << "; ---- ORCA Z-OFFSET CALIBRATION METADATA ----\n";
-    meta << "; calibration_type = z-offset-pattern\n";
-    meta << boost::format("; plate_size_mm = %1$.1f\n") % plate;
-    meta << boost::format("; zone_size_mm = %1$.1f\n") % zone;
-    meta << boost::format("; bed_center_xy = %1$.2f,%2$.2f\n") % bed_center.x() % bed_center.y();
-    if (params.fiducials) {
-        meta << boost::format("; fiducial_positions = X%1$.2f,Y%2$.2f X%3$.2f,Y%4$.2f X%5$.2f,Y%6$.2f X%7$.2f,Y%8$.2f\n")
-            % bed_x(-fid_off) % bed_y(-fid_off)
-            % bed_x(+fid_off) % bed_y(-fid_off)
-            % bed_x(+fid_off) % bed_y(+fid_off)
-            % bed_x(-fid_off) % bed_y(+fid_off);
-    }
-    if (params.scale_bar) {
-        meta << boost::format("; scale_bar_origin = X%1$.2f,Y%2$.2f\n") % bed_x(-5.0) % bed_y(scale_bar_y);
-        meta << "; scale_bar_length_mm = 10\n";
-        meta << "; scale_bar_tick_count = 11\n";
-    }
-    meta << boost::format("; zone_S_center = X%1$.2f,Y%2$.2f  zone_S_size = %3$.1f\n") % bed_x(-zone_pitch) % bed_y(row_y) % zone;
-    meta << boost::format("; zone_G_center = X%1$.2f,Y%2$.2f  zone_G_size = %3$.1f  zone_G_gaps_mm = 0.5,0.6,0.8\n") % bed_x(0.0) % bed_y(row_y) % zone;
-    meta << boost::format("; zone_W_center = X%1$.2f,Y%2$.2f  zone_W_size = %3$.1f  zone_W_wall_count = 3\n") % bed_x(+zone_pitch) % bed_y(row_y) % zone;
-    meta << boost::format("; zone_C_corners = X%1$.2f,Y%2$.2f X%3$.2f,Y%4$.2f X%5$.2f,Y%6$.2f X%7$.2f,Y%8$.2f\n")
-        % bed_x(-corner_off) % bed_y(-corner_off)
-        % bed_x(+corner_off) % bed_y(-corner_off)
-        % bed_x(+corner_off) % bed_y(+corner_off)
-        % bed_x(-corner_off) % bed_y(+corner_off);
-    meta << "; ---- END Z-OFFSET CALIBRATION METADATA ----\n";
-
-    // Insert right after the HEADER_BLOCK_START marker (consistent with other Orca metadata).
-    std::ifstream in(gcode_path);
-    if (!in) return false;
-    std::ostringstream body;
-    body << in.rdbuf();
-    in.close();
-    std::string contents = body.str();
-
-    const std::string marker = "; HEADER_BLOCK_START";
-    const size_t marker_pos = contents.find(marker);
-    size_t insert_pos = 0;
-    if (marker_pos != std::string::npos) {
-        const size_t line_end = contents.find('\n', marker_pos);
-        insert_pos = (line_end != std::string::npos) ? line_end + 1 : marker_pos + marker.size();
-    } else {
-        // No HEADER_BLOCK marker — fall through to the very top, after any leading shebang.
-        insert_pos = 0;
-    }
-    contents.insert(insert_pos, meta.str());
-
-    std::ofstream out(gcode_path, std::ios::trunc);
-    if (!out) return false;
-    out.write(contents.data(), contents.size());
-    out.close();
-    BOOST_LOG_TRIVIAL(info) << "cli_inject_zcal_metadata: wrote metadata block to " << gcode_path;
-    return true;
-}
 
 // ============================================================
 // Tower-shaped calibration tests (Temperature, Volumetric Speed, PA Tower).
@@ -865,6 +781,93 @@ void cli_apply_pa_tower(Model &model, DynamicPrintConfig &full_config, const CLI
         % params.start % params.end % params.step % wall_speed;
 }
 
+//ORCA: Headless port of Plater::calib_retraction (Plater.cpp:13333). Loads retraction_tower.drc,
+//      cuts to user's range, applies per-object configs + a layer-height pick driven by nozzle
+//      size. The Print engine's per-layer modulation handles the retraction-length progression.
+void cli_apply_retraction_tower(Model &model, DynamicPrintConfig &full_config, const CLITowerParams &params)
+{
+    if (model.objects.empty()) {
+        BOOST_LOG_TRIVIAL(error) << "cli_apply_retraction_tower: model is empty";
+        return;
+    }
+    auto *obj = model.objects[0];
+
+    full_config.set_key_value("enable_wrapping_detection", new ConfigOptionBool(false));
+
+    const double nozzle_diameter = cli_nozzle_diameter(full_config);
+    double layer_height = 0.2;
+    if      (nozzle_diameter <= 0.1) layer_height = 0.05;
+    else if (nozzle_diameter <= 0.2) layer_height = 0.10;
+
+    if (auto *max_lh = full_config.option<ConfigOptionFloats>("max_layer_height"); max_lh && !max_lh->values.empty())
+        if (max_lh->values[0] < layer_height) max_lh->values[0] = layer_height;
+
+    full_config.set_key_value("resonance_avoidance", new ConfigOptionBool(false));
+    full_config.set_key_value("use_firmware_retraction", new ConfigOptionBool(false));
+    full_config.set_key_value("initial_layer_print_height", new ConfigOptionFloat(layer_height));
+
+    auto &cfg = obj->config;
+    cfg.set_key_value("wall_loops", new ConfigOptionInt(2));
+    cfg.set_key_value("top_shell_layers", new ConfigOptionInt(0));
+    cfg.set_key_value("bottom_shell_layers", new ConfigOptionInt(3));
+    cfg.set_key_value("sparse_infill_density", new ConfigOptionPercent(0));
+    cfg.set_key_value("layer_height", new ConfigOptionFloat(layer_height));
+    cfg.set_key_value("alternate_extra_wall", new ConfigOptionBool(false));
+    cfg.set_key_value("seam_position", new ConfigOptionEnum<SeamPosition>(spAligned));
+    cfg.set_key_value("wall_sequence", new ConfigOptionEnum<WallSequence>(WallSequence::InnerOuter));
+    cfg.set_key_value("overhang_reverse", new ConfigOptionBool(false));
+    cfg.set_key_value("precise_z_height", new ConfigOptionBool(false));
+
+    if (params.step > 0.0) {
+        const auto obj_bb = obj->bounding_box_exact();
+        const double height = 1.0 + 0.4 + (params.end - params.start) / params.step - EPSILON;
+        if (height < obj_bb.size().z())
+            cli_cut_horizontal(model, 0, height, ModelObjectCutAttribute::KeepLower);
+    }
+
+    BOOST_LOG_TRIVIAL(info) << boost::format("cli_apply_retraction_tower: start=%1% end=%2% step=%3% mm, layer_h=%4$.3f")
+        % params.start % params.end % params.step % layer_height;
+}
+
+//ORCA: Headless port of Plater::calib_VFA (Plater.cpp:13391). Loads vfa.drc, applies spiral-mode
+//      single-perimeter configs, cuts to range. The Print engine modulates outer_wall_speed at
+//      5mm Z intervals (GCode.cpp:4612).
+void cli_apply_vfa_tower(Model &model, DynamicPrintConfig &full_config, const CLITowerParams &params)
+{
+    if (model.objects.empty()) {
+        BOOST_LOG_TRIVIAL(error) << "cli_apply_vfa_tower: model is empty";
+        return;
+    }
+    full_config.set_key_value("resonance_avoidance", new ConfigOptionBool(false));
+    full_config.set_key_value("slow_down_layer_time", new ConfigOptionFloats{0.0});
+    full_config.set_key_value("enable_overhang_speed", new ConfigOptionBool(false));
+    full_config.set_key_value("timelapse_type", new ConfigOptionEnum<TimelapseType>(tlTraditional));
+    full_config.set_key_value("wall_loops", new ConfigOptionInt(1));
+    full_config.set_key_value("alternate_extra_wall", new ConfigOptionBool(false));
+    full_config.set_key_value("top_shell_layers", new ConfigOptionInt(0));
+    full_config.set_key_value("bottom_shell_layers", new ConfigOptionInt(1));
+    full_config.set_key_value("sparse_infill_density", new ConfigOptionPercent(0));
+    full_config.set_key_value("detect_thin_wall", new ConfigOptionBool(false));
+    full_config.set_key_value("spiral_mode", new ConfigOptionBool(true));
+    full_config.set_key_value("enable_wrapping_detection", new ConfigOptionBool(false));
+    full_config.set_key_value("precise_z_height", new ConfigOptionBool(false));
+
+    auto &cfg = model.objects[0]->config;
+    cfg.set_key_value("brim_type", new ConfigOptionEnum<BrimType>(btOuterOnly));
+    cfg.set_key_value("brim_width", new ConfigOptionFloat(3.0));
+    cfg.set_key_value("brim_object_gap", new ConfigOptionFloat(0.0));
+
+    if (params.step > 0.0) {
+        const auto obj_bb = model.objects[0]->bounding_box_exact();
+        const double height = 5.0 * ((params.end - params.start) / params.step + 1.0);
+        if (height < obj_bb.size().z())
+            cli_cut_horizontal(model, 0, height, ModelObjectCutAttribute::KeepLower);
+    }
+
+    BOOST_LOG_TRIVIAL(info) << boost::format("cli_apply_vfa_tower: start=%1% end=%2% step=%3% mm/s")
+        % params.start % params.end % params.step;
+}
+
 bool cli_tower_get_calib_params(CLICalibType type, const CLITowerParams &params,
                                 const DynamicPrintConfig &full_config, Calib_Params &out)
 {
@@ -897,9 +900,383 @@ bool cli_tower_get_calib_params(CLICalibType type, const CLITowerParams &params,
     case CLICalibType::PATower:
         out.mode = CalibMode::Calib_PA_Tower;
         return true;
+    case CLICalibType::RetractionTower:
+        out.mode = CalibMode::Calib_Retraction_tower;
+        return true;
+    case CLICalibType::VFATower:
+        out.mode = CalibMode::Calib_VFA_Tower;
+        return true;
     default:
         return false;
     }
+}
+
+// ============================================================
+// Unified calibration outputs (gcode header metadata + JSON sidecar).
+// ============================================================
+
+namespace {
+
+// Tiny JSON writer — std::string concat. The structure is fixed enough that pulling in nlohmann/json
+// or boost::json would be overkill, and we already control every key/value being emitted.
+struct JsonOut {
+    std::string body;
+    int indent = 0;
+    void w(const std::string &s) { body += std::string(indent * 2, ' '); body += s; }
+    static std::string str(const std::string &s) {
+        std::string r = "\"";
+        for (char c : s) {
+            if (c == '"' || c == '\\') { r += '\\'; r += c; }
+            else if (c == '\n') r += "\\n";
+            else r += c;
+        }
+        r += '"';
+        return r;
+    }
+    static std::string num(double d) {
+        std::ostringstream os;
+        os.precision(6);
+        os << std::fixed << d;
+        std::string s = os.str();
+        // Trim trailing zeros after the decimal point for readability.
+        if (s.find('.') != std::string::npos) {
+            while (!s.empty() && s.back() == '0') s.pop_back();
+            if (!s.empty() && s.back() == '.') s.pop_back();
+        }
+        return s;
+    }
+};
+
+Vec2d resolve_bed_center(const DynamicPrintConfig &full_config)
+{
+    if (const ConfigOptionPoints *p = full_config.option<ConfigOptionPoints>("printable_area"); p && !p->values.empty()) {
+        BoundingBoxf bb;
+        for (const Vec2d &v : p->values) bb.merge(v);
+        return bb.center();
+    }
+    return Vec2d{125.0, 110.0};
+}
+
+// Returns the calibration type name as a stable string (mirrors the CLI --calibrate-type values).
+const char* calib_type_name(CLICalibType t)
+{
+    switch (t) {
+    case CLICalibType::FlowRate_YOLO_Recommended:    return "flow-yolo-recommended";
+    case CLICalibType::FlowRate_YOLO_Perfectionist:  return "flow-yolo-perfectionist";
+    case CLICalibType::FlowRate_Pass1:               return "flow-pass1";
+    case CLICalibType::FlowRate_Pass2:               return "flow-pass2";
+    case CLICalibType::ZOffsetPattern:               return "z-offset-pattern";
+    case CLICalibType::TempTower:                    return "temp-tower";
+    case CLICalibType::VolSpeedTower:                return "vol-speed-tower";
+    case CLICalibType::PATower:                      return "pa-tower";
+    case CLICalibType::RetractionTower:              return "retraction-tower";
+    case CLICalibType::VFATower:                     return "vfa-tower";
+    default:                                         return "none";
+    }
+}
+
+// For tower types, emit a per-block table of {z_low, z_high, value} so AI can look up
+// "scan defect at Z=27mm" → block params without inverting the start/end/step math.
+// Encodes the Print engine's per-layer modulation formula from GCode.cpp:4604-4630.
+struct TowerBlock { double z_low, z_high, value; };
+std::vector<TowerBlock> compute_tower_blocks(CLICalibType type, const CLITowerParams &p)
+{
+    std::vector<TowerBlock> out;
+    if (p.step <= 0.0) return out;
+
+    auto push = [&](double zl, double zh, double v) { out.push_back({zl, zh, v}); };
+
+    switch (type) {
+    case CLICalibType::TempTower: {
+        // 10mm per block, 5°C step, start at bottom (hottest) → end at top (coolest).
+        const int blocks = static_cast<int>(std::round((p.start - p.end) / 5.0) + 1);
+        for (int i = 0; i < blocks; ++i)
+            push(i * 10.0, (i + 1) * 10.0, p.start - i * 5.0);
+        break;
+    }
+    case CLICalibType::PATower: {
+        // GCode.cpp:4605: PA = start + (int)Z * step. So blocks of 1mm height.
+        const int blocks = static_cast<int>(std::round((p.end - p.start) / p.step) + 1);
+        for (int i = 0; i < blocks; ++i)
+            push(static_cast<double>(i), i + 1.0, p.start + i * p.step);
+        break;
+    }
+    case CLICalibType::VolSpeedTower: {
+        // GCode.cpp:4618: speed_mm_per_s = start + Z * step (after mm3/s→mm/s conversion).
+        // For user-facing metadata we emit the ORIGINAL mm3/s values, blockless (Z-range = full cut).
+        const int steps = static_cast<int>(std::round((p.end - p.start) / p.step) + 1);
+        // height-per-step depends on the conversion; we just expose the linear formula.
+        for (int i = 0; i < steps; ++i)
+            push(static_cast<double>(i), i + 1.0, p.start + i * p.step);
+        break;
+    }
+    case CLICalibType::RetractionTower: {
+        // GCode.cpp:4623: length = start + floor(max(0,Z-0.4)) * step. 1mm-per-block.
+        const int blocks = static_cast<int>(std::round((p.end - p.start) / p.step) + 1);
+        for (int i = 0; i < blocks; ++i)
+            push(0.4 + i, 0.4 + i + 1.0, p.start + i * p.step);
+        break;
+    }
+    case CLICalibType::VFATower: {
+        // GCode.cpp:4613: speed = start + floor(Z / 5.0) * step. 5mm-per-block.
+        const int blocks = static_cast<int>(std::round((p.end - p.start) / p.step) + 1);
+        for (int i = 0; i < blocks; ++i)
+            push(i * 5.0, (i + 1) * 5.0, p.start + i * p.step);
+        break;
+    }
+    default: break;
+    }
+    return out;
+}
+
+const char* tower_value_key(CLICalibType t)
+{
+    switch (t) {
+    case CLICalibType::TempTower:        return "temp_c";
+    case CLICalibType::PATower:          return "pa_s";
+    case CLICalibType::VolSpeedTower:    return "vol_speed_mm3_per_s";
+    case CLICalibType::RetractionTower:  return "retraction_mm";
+    case CLICalibType::VFATower:         return "speed_mm_per_s";
+    default: return "value";
+    }
+}
+
+// Compute per-block info for flow-rate tests by walking model.objects and parsing names.
+struct FlowBlockInfo { std::string name; double modifier; double print_flow_ratio; double x, y; };
+std::vector<FlowBlockInfo> compute_flow_blocks(const Model *model, double cur_flowrate, bool is_linear)
+{
+    std::vector<FlowBlockInfo> out;
+    if (!model) return out;
+    for (const ModelObject *mo : model->objects) {
+        if (!mo) continue;
+        bool ok = false;
+        const float mod = parse_flow_modifier(mo->name, ok);
+        if (!ok) continue;
+        const double pfr = is_linear
+            ? (cur_flowrate + mod) / cur_flowrate
+            : 1.0 + mod / 100.0;
+        Vec3d off = mo->instances.empty() ? Vec3d::Zero() : mo->instances[0]->get_offset();
+        out.push_back({mo->name, mod, pfr, off.x(), off.y()});
+    }
+    return out;
+}
+
+} // anonymous
+
+bool cli_emit_calib_outputs(const std::string &gcode_path,
+                            CLICalibType type,
+                            const DynamicPrintConfig &full_config,
+                            const CLIZCalParams *zcal_params,
+                            const CLITowerParams *tower_params,
+                            const CLIFlowRateParams *flow_params,
+                            const Model *model)
+{
+    if (type == CLICalibType::NoCalib) return false;
+    if (!boost::filesystem::exists(gcode_path)) {
+        BOOST_LOG_TRIVIAL(error) << "cli_emit_calib_outputs: missing gcode file " << gcode_path;
+        return false;
+    }
+
+    const Vec2d bed_center = resolve_bed_center(full_config);
+    const std::string type_name = calib_type_name(type);
+
+    // ---- Compose gcode header metadata block (machine-readable comments) ----
+    std::ostringstream meta;
+    meta << "; ---- ORCA CALIBRATION METADATA ----\n";
+    meta << "; calibration_type = " << type_name << "\n";
+    meta << boost::format("; bed_center_xy = %1$.2f,%2$.2f\n") % bed_center.x() % bed_center.y();
+
+    // ---- Compose JSON sidecar payload ----
+    JsonOut J;
+    J.indent = 0;
+    J.w("{\n"); J.indent = 1;
+    J.w(JsonOut::str("calibration_type") + ": " + JsonOut::str(type_name) + ",\n");
+    J.w(JsonOut::str("bed_center") + ": {"
+        + JsonOut::str("x") + ": " + JsonOut::num(bed_center.x()) + ", "
+        + JsonOut::str("y") + ": " + JsonOut::num(bed_center.y()) + "},\n");
+    J.w(JsonOut::str("gcode_file") + ": " + JsonOut::str(boost::filesystem::path(gcode_path).filename().string()) + ",\n");
+
+    if (type == CLICalibType::ZOffsetPattern && zcal_params) {
+        const auto &p = *zcal_params;
+        const double half       = p.plate_size / 2.0;
+        const double fid_off    = half - 5.0;
+        const double corner_off = half - 12.0;
+        const double row_y      = 8.0;
+        const double zone_pitch = p.zone_size + 3.0;
+        const double scale_bar_y = -(half - 8.0);
+
+        meta << boost::format("; plate_size_mm = %1$.1f\n") % p.plate_size;
+        meta << boost::format("; zone_size_mm = %1$.1f\n") % p.zone_size;
+        if (p.fiducials) {
+            meta << boost::format("; fiducial_positions = X%1$.2f,Y%2$.2f X%3$.2f,Y%4$.2f X%5$.2f,Y%6$.2f X%7$.2f,Y%8$.2f\n")
+                % (bed_center.x() - fid_off) % (bed_center.y() - fid_off)
+                % (bed_center.x() + fid_off) % (bed_center.y() - fid_off)
+                % (bed_center.x() + fid_off) % (bed_center.y() + fid_off)
+                % (bed_center.x() - fid_off) % (bed_center.y() + fid_off);
+        }
+        if (p.scale_bar) {
+            meta << boost::format("; scale_bar_origin = X%1$.2f,Y%2$.2f\n") % (bed_center.x() - 5.0) % (bed_center.y() + scale_bar_y);
+            meta << "; scale_bar_length_mm = 10\n";
+            meta << "; scale_bar_tick_count = 11\n";
+        }
+        meta << boost::format("; zone_S_center = X%1$.2f,Y%2$.2f  zone_S_size = %3$.1f\n")
+            % (bed_center.x() - zone_pitch) % (bed_center.y() + row_y) % p.zone_size;
+        meta << boost::format("; zone_G_center = X%1$.2f,Y%2$.2f  zone_G_size = %3$.1f  zone_G_gaps_mm = 0.5,0.6,0.8\n")
+            % bed_center.x() % (bed_center.y() + row_y) % p.zone_size;
+        meta << boost::format("; zone_W_center = X%1$.2f,Y%2$.2f  zone_W_size = %3$.1f  zone_W_wall_count = 3\n")
+            % (bed_center.x() + zone_pitch) % (bed_center.y() + row_y) % p.zone_size;
+        meta << boost::format("; zone_C_corners = X%1$.2f,Y%2$.2f X%3$.2f,Y%4$.2f X%5$.2f,Y%6$.2f X%7$.2f,Y%8$.2f\n")
+            % (bed_center.x() - corner_off) % (bed_center.y() - corner_off)
+            % (bed_center.x() + corner_off) % (bed_center.y() - corner_off)
+            % (bed_center.x() + corner_off) % (bed_center.y() + corner_off)
+            % (bed_center.x() - corner_off) % (bed_center.y() + corner_off);
+
+        // JSON
+        J.w(JsonOut::str("plate_size_mm") + ": " + JsonOut::num(p.plate_size) + ",\n");
+        J.w(JsonOut::str("zone_size_mm") + ": " + JsonOut::num(p.zone_size) + ",\n");
+        J.w(JsonOut::str("zones") + ": [\n"); J.indent = 2;
+        auto zone = [&](const std::string &name, double mx, double my, double sz, const std::string &extra) {
+            J.w("{" + JsonOut::str("name") + ": " + JsonOut::str(name)
+                + ", " + JsonOut::str("center") + ": {"
+                + JsonOut::str("x") + ": " + JsonOut::num(bed_center.x() + mx) + ", "
+                + JsonOut::str("y") + ": " + JsonOut::num(bed_center.y() + my) + "}"
+                + ", " + JsonOut::str("size_mm") + ": " + JsonOut::num(sz)
+                + (extra.empty() ? std::string{} : (", " + extra))
+                + "}");
+        };
+        zone("S", -zone_pitch, row_y, p.zone_size, JsonOut::str("kind") + ": " + JsonOut::str("solid_concentric"));
+        J.body += ",\n";
+        zone("G",  0.0,        row_y, p.zone_size, JsonOut::str("kind") + ": " + JsonOut::str("gap_pairs") + ", " + JsonOut::str("gaps_mm") + ": [0.5,0.6,0.8]");
+        J.body += ",\n";
+        zone("W", +zone_pitch, row_y, p.zone_size, JsonOut::str("kind") + ": " + JsonOut::str("single_walls") + ", " + JsonOut::str("count") + ": 3");
+        J.body += "\n"; J.indent = 1;
+        J.w("],\n");
+        if (p.fiducials) {
+            J.w(JsonOut::str("fiducials") + ": [");
+            const double xs[4] = {bed_center.x() - fid_off, bed_center.x() + fid_off, bed_center.x() + fid_off, bed_center.x() - fid_off};
+            const double ys[4] = {bed_center.y() - fid_off, bed_center.y() - fid_off, bed_center.y() + fid_off, bed_center.y() + fid_off};
+            for (int i = 0; i < 4; ++i) {
+                if (i) J.body += ",";
+                J.body += "{" + JsonOut::str("x") + ":" + JsonOut::num(xs[i]) + "," + JsonOut::str("y") + ":" + JsonOut::num(ys[i]) + "}";
+            }
+            J.body += "],\n";
+        }
+        if (p.scale_bar) {
+            J.w(JsonOut::str("scale_bar") + ": {"
+                + JsonOut::str("origin") + ":{" + JsonOut::str("x") + ":" + JsonOut::num(bed_center.x() - 5.0)
+                + "," + JsonOut::str("y") + ":" + JsonOut::num(bed_center.y() + scale_bar_y) + "},"
+                + JsonOut::str("length_mm") + ":10,"
+                + JsonOut::str("tick_count") + ":11},\n");
+        }
+        J.w(JsonOut::str("corner_loops_C") + ": [");
+        const double cxs[4] = {bed_center.x() - corner_off, bed_center.x() + corner_off, bed_center.x() + corner_off, bed_center.x() - corner_off};
+        const double cys[4] = {bed_center.y() - corner_off, bed_center.y() - corner_off, bed_center.y() + corner_off, bed_center.y() + corner_off};
+        for (int i = 0; i < 4; ++i) {
+            if (i) J.body += ",";
+            J.body += "{" + JsonOut::str("x") + ":" + JsonOut::num(cxs[i]) + "," + JsonOut::str("y") + ":" + JsonOut::num(cys[i]) + "}";
+        }
+        J.body += "]\n";
+    }
+    else if (tower_params && (type == CLICalibType::TempTower || type == CLICalibType::VolSpeedTower
+                              || type == CLICalibType::PATower || type == CLICalibType::RetractionTower
+                              || type == CLICalibType::VFATower)) {
+        const auto &p = *tower_params;
+        meta << boost::format("; tower_start = %1%\n") % p.start;
+        meta << boost::format("; tower_end = %1%\n") % p.end;
+        meta << boost::format("; tower_step = %1%\n") % p.step;
+        auto blocks = compute_tower_blocks(type, p);
+        const char* key = tower_value_key(type);
+        for (size_t i = 0; i < blocks.size(); ++i) {
+            const auto &b = blocks[i];
+            meta << boost::format("; tower_block_%1% = z_low=%2$.2f, z_high=%3$.2f, %4%=%5%\n")
+                % i % b.z_low % b.z_high % key % JsonOut::num(b.value);
+        }
+
+        // JSON
+        J.w(JsonOut::str("params") + ": {"
+            + JsonOut::str("start") + ":" + JsonOut::num(p.start) + ","
+            + JsonOut::str("end")   + ":" + JsonOut::num(p.end)   + ","
+            + JsonOut::str("step")  + ":" + JsonOut::num(p.step)  + "},\n");
+        J.w(JsonOut::str("value_key") + ": " + JsonOut::str(key) + ",\n");
+        J.w(JsonOut::str("blocks") + ": [\n"); J.indent = 2;
+        for (size_t i = 0; i < blocks.size(); ++i) {
+            J.w("{" + JsonOut::str("index") + ":" + std::to_string(i)
+                + "," + JsonOut::str("z_low_mm") + ":" + JsonOut::num(blocks[i].z_low)
+                + "," + JsonOut::str("z_high_mm") + ":" + JsonOut::num(blocks[i].z_high)
+                + "," + JsonOut::str(key) + ":" + JsonOut::num(blocks[i].value) + "}");
+            if (i + 1 < blocks.size()) J.body += ",";
+            J.body += "\n";
+        }
+        J.indent = 1; J.w("]\n");
+    }
+    else if (flow_params && (type == CLICalibType::FlowRate_YOLO_Recommended
+                             || type == CLICalibType::FlowRate_YOLO_Perfectionist
+                             || type == CLICalibType::FlowRate_Pass1
+                             || type == CLICalibType::FlowRate_Pass2)) {
+        double cur_flowrate = 1.0;
+        if (auto *fr = full_config.option<ConfigOptionFloatsNullable>("filament_flow_ratio"); fr && !fr->values.empty())
+            cur_flowrate = fr->values[0];
+        else if (auto *fr2 = full_config.option<ConfigOptionFloats>("filament_flow_ratio"); fr2 && !fr2->values.empty())
+            cur_flowrate = fr2->values[0];
+        auto blocks = compute_flow_blocks(model, cur_flowrate, flow_params->is_linear);
+        meta << boost::format("; flow_seed = %1$.4f\n") % cur_flowrate;
+        meta << boost::format("; is_linear = %1%\n") % (flow_params->is_linear ? 1 : 0);
+        meta << boost::format("; block_count = %1%\n") % blocks.size();
+        for (size_t i = 0; i < blocks.size(); ++i) {
+            const auto &b = blocks[i];
+            meta << boost::format("; flow_block_%1% = name=%2%, modifier=%3$.4f, print_flow_ratio=%4$.4f, X=%5$.2f, Y=%6$.2f\n")
+                % i % b.name % b.modifier % b.print_flow_ratio % b.x % b.y;
+        }
+
+        // JSON
+        J.w(JsonOut::str("flow_seed") + ": " + JsonOut::num(cur_flowrate) + ",\n");
+        J.w(JsonOut::str("is_linear") + ": " + (flow_params->is_linear ? "true" : "false") + ",\n");
+        J.w(JsonOut::str("blocks") + ": [\n"); J.indent = 2;
+        for (size_t i = 0; i < blocks.size(); ++i) {
+            J.w("{" + JsonOut::str("name") + ":" + JsonOut::str(blocks[i].name)
+                + "," + JsonOut::str("modifier") + ":" + JsonOut::num(blocks[i].modifier)
+                + "," + JsonOut::str("print_flow_ratio") + ":" + JsonOut::num(blocks[i].print_flow_ratio)
+                + "," + JsonOut::str("x") + ":" + JsonOut::num(blocks[i].x)
+                + "," + JsonOut::str("y") + ":" + JsonOut::num(blocks[i].y) + "}");
+            if (i + 1 < blocks.size()) J.body += ",";
+            J.body += "\n";
+        }
+        J.indent = 1; J.w("]\n");
+    }
+    meta << "; ---- END ORCA CALIBRATION METADATA ----\n";
+    J.indent = 0; J.w("}\n");
+
+    // ---- Inject metadata block into the gcode header ----
+    {
+        std::ifstream in(gcode_path);
+        if (!in) return false;
+        std::ostringstream body;
+        body << in.rdbuf();
+        in.close();
+        std::string contents = body.str();
+        const std::string marker = "; HEADER_BLOCK_START";
+        size_t insert_pos = 0;
+        size_t marker_pos = contents.find(marker);
+        if (marker_pos != std::string::npos) {
+            size_t line_end = contents.find('\n', marker_pos);
+            insert_pos = (line_end != std::string::npos) ? line_end + 1 : marker_pos + marker.size();
+        }
+        contents.insert(insert_pos, meta.str());
+        std::ofstream out(gcode_path, std::ios::trunc);
+        if (!out) return false;
+        out.write(contents.data(), contents.size());
+    }
+
+    // ---- Write JSON sidecar ----
+    boost::filesystem::path json_path(gcode_path);
+    json_path.replace_extension(".calib.json");
+    {
+        std::ofstream js(json_path.string(), std::ios::trunc);
+        if (js) js << J.body;
+    }
+    BOOST_LOG_TRIVIAL(info) << "cli_emit_calib_outputs: wrote metadata into " << gcode_path
+                            << " and sidecar " << json_path.string();
+    return true;
 }
 
 }
