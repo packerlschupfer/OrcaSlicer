@@ -91,6 +91,15 @@ struct CLIZCalParams {
     bool   fiducials  = true;      // 4 corner fiducial marks for AI-vision auto-alignment
     bool   scale_bar  = true;      // 0-10mm scale bar with 1mm ticks for DPI verification
     bool   zone_labels = false;    // v1: skip stick-font labels (metadata comments suffice)
+    // ORCA: peelable structural frame outside the fiducial bbox. Calibration zones / fiducials /
+    //       scale bar / corner-C loops stay strictly single-layer; only the frame is multi-layer.
+    //       Lets the operator peel the print off the textured PEI sheet as one piece so the
+    //       single-layer surface can be scanned directly on the flatbed glass (the sheet adds
+    //       2-3mm depth, blurring the scan past the scanner's focus depth).
+    bool   frame = true;           // toggle the frame
+    int    frame_layers = 2;       // 2 × 0.20mm = 0.40mm — peelable but trivial to remove by hand
+    double frame_width = 3.0;      // mm
+    double frame_margin = 5.0;     // mm gap from fiducial outer bbox to frame inner edge
 };
 
 void cli_build_zcal_pattern(Model &model, DynamicPrintConfig &full_config, const CLIZCalParams &params);
