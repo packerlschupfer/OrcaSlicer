@@ -1524,6 +1524,10 @@ int CLI::run(int argc, char **argv)
             cli_flow_params.brim_width = w->value;
         if (ConfigOptionFloat *g = m_config.option<ConfigOptionFloat>("flow_brim_gap"); g)
             cli_flow_params.brim_extra_gap = g->value;
+        if (ConfigOptionInt *n = m_config.option<ConfigOptionInt>("flow_blocks"); n)
+            cli_flow_params.max_blocks = n->value;
+        if (ConfigOptionFloat *r = m_config.option<ConfigOptionFloat>("flow_range"); r)
+            cli_flow_params.max_modifier = r->value;
         // Force --slice 0 if the user didn't pass one explicitly — calibration is meaningless without a slice action.
         if (plate_to_slice <= 0 && !slice_option)
             plate_to_slice = 0; // already 0; just being explicit
