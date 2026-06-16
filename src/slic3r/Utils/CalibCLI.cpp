@@ -536,6 +536,40 @@ void cli_build_zcal_pattern(Model &model, DynamicPrintConfig &full_config, const
         }
     }
 
+    // ---- Peelable structural frame (4 sides of a ring around the fiducials) ----
+    //      Multi-layer so the whole plate peels off the textured PEI sheet as one piece without
+    //      tearing the single-layer calibration surface. Frame is OUTSIDE the fiducial bbox by
+    //      params.frame_margin, frame_width thick, frame_layers tall. Each side is a solid
+    //      filled box; per-object config gives it strong walls + dense top so it survives peeling.
+    if (params.frame && params.frame_layers > 0 && params.frame_width > 0.0) {
+        // fiducial outer edge in model space: |fid_off| + (fid_size/2)
+        const double fid_outer        = fid_off + (5.0 / 2.0);
+        const double frame_inner_edge = fid_outer + params.frame_margin;
+        const double frame_outer_edge = frame_inner_edge + params.frame_width;
+        const double frame_height     = ZCAL_LAYER_THICKNESS * static_cast<double>(params.frame_layers);
+        // Horizontal bars span the full outer width; vertical bars sit between them to avoid
+        // double-extrusion in the corners.
+        const double horiz_len = 2.0 * frame_outer_edge;
+        const double vert_len  = 2.0 * frame_inner_edge;
+        const double bar_xc    = (frame_inner_edge + frame_outer_edge) / 2.0;
+        const double bar_yc    = (frame_inner_edge + frame_outer_edge) / 2.0;
+
+        ModelObject* top    = add_box_object(model, "frame_top",    0.0,        +bar_yc, horiz_len, params.frame_width, frame_height);
+        ModelObject* bottom = add_box_object(model, "frame_bottom", 0.0,        -bar_yc, horiz_len, params.frame_width, frame_height);
+        ModelObject* left   = add_box_object(model, "frame_left",   -bar_xc,    0.0,     params.frame_width, vert_len, frame_height);
+        ModelObject* right  = add_box_object(model, "frame_right",  +bar_xc,    0.0,     params.frame_width, vert_len, frame_height);
+
+        // Strong walls + dense top so the multi-layer bar survives being peeled. With a 3mm-wide
+        // box and 0.45mm line width, 4 walls = 1.8mm and the remainder fills with concentric.
+        for (ModelObject* fb : {top, bottom, left, right}) {
+            fb->config.set_key_value("wall_loops", new ConfigOptionInt(3));
+            fb->config.set_key_value("top_shell_layers", new ConfigOptionInt(std::min(params.frame_layers, 2)));
+            fb->config.set_key_value("bottom_shell_layers", new ConfigOptionInt(std::min(params.frame_layers, 2)));
+            fb->config.set_key_value("sparse_infill_density", new ConfigOptionPercent(100));
+            fb->config.set_key_value("top_surface_pattern", new ConfigOptionEnum<InfillPattern>(ipConcentric));
+        }
+    }
+
     // ---- Print-config overrides — single layer hard cap ----
     full_config.set_key_value("layer_height", new ConfigOptionFloat(ZCAL_LAYER_THICKNESS));
     full_config.set_key_value("initial_layer_print_height", new ConfigOptionFloat(ZCAL_LAYER_THICKNESS));
@@ -1175,7 +1209,40 @@ bool cli_emit_calib_outputs(const std::string &gcode_path,
             if (i) J.body += ",";
             J.body += "{" + JsonOut::str("x") + ":" + JsonOut::num(cxs[i]) + "," + JsonOut::str("y") + ":" + JsonOut::num(cys[i]) + "}";
         }
-        J.body += "]\n";
+        J.body += "]";
+        if (p.frame && p.frame_layers > 0 && p.frame_width > 0.0) {
+            // Frame inner/outer bbox in bed coords (model-space ±(fid_outer + margin) and +frame_width).
+            const double fid_outer        = fid_off + 2.5;
+            const double frame_inner_edge = fid_outer + p.frame_margin;
+            const double frame_outer_edge = frame_inner_edge + p.frame_width;
+            const double frame_z_max      = 0.20 * static_cast<double>(p.frame_layers);
+            meta << boost::format("; frame_enabled = 1\n");
+            meta << boost::format("; frame_outer_bbox = X%1$.2f,Y%2$.2f X%3$.2f,Y%4$.2f\n")
+                % (bed_center.x() - frame_outer_edge) % (bed_center.y() - frame_outer_edge)
+                % (bed_center.x() + frame_outer_edge) % (bed_center.y() + frame_outer_edge);
+            meta << boost::format("; frame_inner_bbox = X%1$.2f,Y%2$.2f X%3$.2f,Y%4$.2f\n")
+                % (bed_center.x() - frame_inner_edge) % (bed_center.y() - frame_inner_edge)
+                % (bed_center.x() + frame_inner_edge) % (bed_center.y() + frame_inner_edge);
+            meta << boost::format("; frame_layers = %1%\n") % p.frame_layers;
+            meta << boost::format("; frame_z_max_mm = %1$.2f\n") % frame_z_max;
+            J.body += ",\n";
+            J.w(JsonOut::str("frame") + ": {"
+                + JsonOut::str("enabled") + ":true,"
+                + JsonOut::str("outer_bbox") + ":{"
+                    + JsonOut::str("x_min") + ":" + JsonOut::num(bed_center.x() - frame_outer_edge) + ","
+                    + JsonOut::str("y_min") + ":" + JsonOut::num(bed_center.y() - frame_outer_edge) + ","
+                    + JsonOut::str("x_max") + ":" + JsonOut::num(bed_center.x() + frame_outer_edge) + ","
+                    + JsonOut::str("y_max") + ":" + JsonOut::num(bed_center.y() + frame_outer_edge) + "},"
+                + JsonOut::str("inner_bbox") + ":{"
+                    + JsonOut::str("x_min") + ":" + JsonOut::num(bed_center.x() - frame_inner_edge) + ","
+                    + JsonOut::str("y_min") + ":" + JsonOut::num(bed_center.y() - frame_inner_edge) + ","
+                    + JsonOut::str("x_max") + ":" + JsonOut::num(bed_center.x() + frame_inner_edge) + ","
+                    + JsonOut::str("y_max") + ":" + JsonOut::num(bed_center.y() + frame_inner_edge) + "},"
+                + JsonOut::str("layers") + ":" + std::to_string(p.frame_layers) + ","
+                + JsonOut::str("z_max_mm") + ":" + JsonOut::num(frame_z_max)
+                + "}");
+        }
+        J.body += "\n";
     }
     else if (tower_params && (type == CLICalibType::TempTower || type == CLICalibType::VolSpeedTower
                               || type == CLICalibType::PATower || type == CLICalibType::RetractionTower
