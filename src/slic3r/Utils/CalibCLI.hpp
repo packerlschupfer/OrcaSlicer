@@ -45,6 +45,8 @@ struct CLIFlowRateParams {
     bool           brim_enabled = false;
     double         brim_width = 2.0;              // mm, only used when brim_enabled
     double         brim_extra_gap = 0.0;          // mm, only used when brim_enabled
+    int            max_blocks = -1;               // -1 = all; otherwise keep N blocks closest to modifier=0
+    double         max_modifier = -1.0;           // <=0 = no filter; otherwise keep blocks with |modifier| <= this
 };
 void cli_apply_flowrate_calib(Model &model, DynamicPrintConfig &full_config, const CLIFlowRateParams &params);
 

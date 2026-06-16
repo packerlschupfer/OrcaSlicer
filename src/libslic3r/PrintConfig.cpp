@@ -10915,6 +10915,23 @@ CLIMiscConfigDef::CLIMiscConfigDef()
     def->cli_params = "mm";
     def->set_default_value(new ConfigOptionFloat(0.0));
 
+    def = this->add("flow_blocks", coInt);
+    def->label = L("Flow calibration block count");
+    def->tooltip = L("Limit the flow-rate calibration plate to the N blocks closest to zero modifier "
+                     "(symmetric subset). Composes with --flow-range — both filters intersect. "
+                     "Use when the bed is too small for the full 11/16-block grid or the rough flow "
+                     "rate is already known. Default: keep all blocks from the source 3MF.");
+    def->cli_params = "N";
+    def->set_default_value(new ConfigOptionInt(-1));
+
+    def = this->add("flow_range", coFloat);
+    def->label = L("Flow calibration modifier range");
+    def->tooltip = L("Drop flow-rate calibration blocks whose |modifier| exceeds this value. "
+                     "E.g. --flow-range 0.03 keeps only blocks -0.03..+0.03. Composes with "
+                     "--flow-blocks. Default: keep all.");
+    def->cli_params = "R";
+    def->set_default_value(new ConfigOptionFloat(-1.0));
+
     def = this->add("skip_objects", coInts);
     def->label = L("Skip Objects");
     def->tooltip = L("Skip some objects in this print.");
