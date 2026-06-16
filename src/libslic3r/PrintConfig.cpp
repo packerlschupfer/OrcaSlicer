@@ -10932,6 +10932,37 @@ CLIMiscConfigDef::CLIMiscConfigDef()
     def->cli_params = "R";
     def->set_default_value(new ConfigOptionFloat(-1.0));
 
+    //ORCA: sub-flags for --calibrate-type z-offset-pattern.
+    def = this->add("zcal_size", coFloat);
+    def->label = L("Z-cal plate size");
+    def->tooltip = L("Total footprint of the z-offset calibration plate in mm. Default 100.");
+    def->cli_params = "mm";
+    def->set_default_value(new ConfigOptionFloat(100.0));
+
+    def = this->add("zcal_zone_size", coFloat);
+    def->label = L("Z-cal zone size");
+    def->tooltip = L("Individual zone footprint (S/G/W) in mm. Default 30.");
+    def->cli_params = "mm";
+    def->set_default_value(new ConfigOptionFloat(30.0));
+
+    def = this->add("zcal_fiducials", coBool);
+    def->label = L("Z-cal fiducial marks");
+    def->tooltip = L("Add 4 corner fiducial crosses to the z-offset calibration plate "
+                     "(used by AI-vision tooling for auto-alignment / de-skew). Default ON.");
+    def->set_default_value(new ConfigOptionBool(true));
+
+    def = this->add("zcal_scale_bar", coBool);
+    def->label = L("Z-cal scale bar");
+    def->tooltip = L("Add a 10mm scale bar with 1mm ticks for DPI verification of the post-print "
+                     "scanner image. Default ON.");
+    def->set_default_value(new ConfigOptionBool(true));
+
+    def = this->add("zcal_zone_labels", coBool);
+    def->label = L("Z-cal zone labels");
+    def->tooltip = L("Embed S/G/W/C single-stroke characters at each zone center. v1: not implemented "
+                     "(metadata comments in the gcode already document zone coordinates). Default OFF.");
+    def->set_default_value(new ConfigOptionBool(false));
+
     def = this->add("skip_objects", coInts);
     def->label = L("Skip Objects");
     def->tooltip = L("Skip some objects in this print.");

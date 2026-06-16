@@ -4,12 +4,16 @@
 #include <cmath>
 #include <clocale>
 #include <cstdlib>
+#include <fstream>
+#include <sstream>
 #include <string>
 
 #include <boost/log/trivial.hpp>
 #include <boost/format.hpp>
+#include <boost/filesystem.hpp>
 
 #include "libslic3r/Flow.hpp"
+#include "libslic3r/TriangleMesh.hpp"
 #include "libslic3r/Utils.hpp"
 
 namespace Slic3r {
@@ -20,6 +24,7 @@ CLICalibType cli_calib_type_from_string(const std::string &name)
     if (name == "flow-yolo-perfectionist")  return CLICalibType::FlowRate_YOLO_Perfectionist;
     if (name == "flow-pass1")               return CLICalibType::FlowRate_Pass1;
     if (name == "flow-pass2")               return CLICalibType::FlowRate_Pass2;
+    if (name == "z-offset-pattern")         return CLICalibType::ZOffsetPattern;
     return CLICalibType::NoCalib;
 }
 
@@ -35,6 +40,10 @@ std::string cli_calib_resource_path(CLICalibType type)
         return root + "/calib/filament_flow/flowrate-test-pass1.3mf";
     case CLICalibType::FlowRate_Pass2:
         return root + "/calib/filament_flow/flowrate-test-pass2.3mf";
+    case CLICalibType::ZOffsetPattern:
+        // Use any existing 3MF as a load-pipeline placeholder; cli_build_zcal_pattern wipes
+        // the Model and rebuilds from procedural primitives.
+        return root + "/calib/filament_flow/Orca-LinearFlow.3mf";
     default:
         return std::string();
     }
@@ -298,6 +307,328 @@ void cli_apply_flowrate_calib(Model &model, DynamicPrintConfig &full_config, con
 
     BOOST_LOG_TRIVIAL(info) << boost::format("cli_apply_flowrate_calib: pass=%1% is_linear=%2% pattern=%3% brim=%4% objects=%5%")
         % params.pass % params.is_linear % static_cast<int>(params.pattern) % params.brim_enabled % model.objects.size();
+}
+
+// ============================================================
+// Z-offset / Live-Z calibration pattern (procedural mesh).
+// ============================================================
+
+namespace {
+
+// Layer thickness for every primitive in the Z-cal plate. Matches initial_layer_print_height
+// so each mesh slices to exactly one layer regardless of layer_height.
+constexpr double ZCAL_LAYER_THICKNESS = 0.20;
+
+// Line widths chosen so single-perimeter walls render as one extrusion at 0.4mm nozzle.
+constexpr double ZCAL_THIN_WALL_WIDTH = 0.45;
+
+// Centered axis-aligned box ModelObject. The mesh is built at the origin (size centered in
+// XY, sitting on Z=0 with its top at thickness) and the instance offset positions it on the
+// plate. All Z-cal primitives use this builder.
+ModelObject* add_box_object(Model& model, const std::string& name,
+                            double xc, double yc,
+                            double w, double h, double thickness)
+{
+    // its_make_cube draws from (0,0,0) to (w,h,t); shift by -w/2,-h/2,0 to center XY around origin.
+    TriangleMesh mesh(its_make_cube(w, h, thickness));
+    mesh.translate(-w/2.0f, -h/2.0f, 0.0f);
+    ModelObject* mo = model.add_object();
+    mo->name = name;
+    // add_volume with modify_to_center_geometry=false keeps our mesh centered as built — the
+    // default would recompute and apply origin_translation which we don't want for a pre-built
+    // primitive at a known position.
+    mo->add_volume(std::move(mesh), ModelVolumeType::MODEL_PART, /*modify_to_center_geometry=*/false);
+    ModelInstance* inst = mo->add_instance();
+    inst->set_offset(Vec3d(xc, yc, 0.0));
+    return mo;
+}
+
+// Per-object overrides that make a small thin box render as a single-perimeter freestanding wall
+// (no infill, no top/bottom). Used for Zone W walls and Zone G gap-pair walls.
+void set_single_wall_config(ModelObject* mo)
+{
+    mo->config.set_key_value("wall_loops", new ConfigOptionInt(1));
+    mo->config.set_key_value("top_shell_layers", new ConfigOptionInt(0));
+    mo->config.set_key_value("bottom_shell_layers", new ConfigOptionInt(1));
+    mo->config.set_key_value("sparse_infill_density", new ConfigOptionPercent(0));
+    mo->config.set_key_value("only_one_wall_top", new ConfigOptionBool(false));
+}
+
+// Per-object overrides for Zone S — solid pad with concentric infill, the squish-uniformity
+// indicator. One wall, concentric top pattern, no sparse infill (single layer is all-top).
+void set_solid_pad_config(ModelObject* mo)
+{
+    mo->config.set_key_value("wall_loops", new ConfigOptionInt(1));
+    mo->config.set_key_value("top_shell_layers", new ConfigOptionInt(1));
+    mo->config.set_key_value("bottom_shell_layers", new ConfigOptionInt(1));
+    mo->config.set_key_value("sparse_infill_density", new ConfigOptionPercent(0));
+    mo->config.set_key_value("top_surface_pattern", new ConfigOptionEnum<InfillPattern>(ipConcentric));
+    mo->config.set_key_value("bottom_surface_pattern", new ConfigOptionEnum<InfillPattern>(ipConcentric));
+}
+
+// Per-object overrides for Zone C corner loops — small ring (single-perimeter) at each corner.
+// Same as single_wall_config but kept as its own helper so future tuning (e.g. brim toggle for
+// corner adhesion) doesn't drag Zone W along.
+void set_corner_loop_config(ModelObject* mo)
+{
+    set_single_wall_config(mo);
+}
+
+} // anonymous
+
+void cli_build_zcal_pattern(Model &model, DynamicPrintConfig &full_config, const CLIZCalParams &params)
+{
+    //ORCA: the load pipeline populated model from a placeholder 3MF; wipe everything and rebuild.
+    while (!model.objects.empty())
+        model.delete_object(model.objects.size() - 1);
+
+    const double plate     = params.plate_size;       // typically 100mm
+    const double zone      = params.zone_size;        // typically 30mm (or smaller if zones don't fit)
+    const double half      = plate / 2.0;
+
+    // Layout in model space (centered at 0,0). The CLI's center-on-bed step later translates
+    // the whole plate to the bed center.
+    //
+    //   fid_TL                                           fid_TR
+    //     +                                                 +
+    //     C_TL                                           C_TR
+    //
+    //              [ S ]      [ G ]      [ W ]
+    //
+    //     C_BL                                           C_BR
+    //     +     |||||||||||||||||| scale bar               +
+    //   fid_BL                                           fid_BR
+    //
+    // Fiducials at ±(half-5), Zone-C loops at ±(half-12), main row of S/G/W at y=+8.
+
+    const double fid_off       = half - 5.0;     // fiducial center inset from plate edge
+    const double corner_off    = half - 12.0;    // Zone C loop inset
+    const double row_y         = 8.0;            // main S/G/W row y center
+    const double zone_spacing  = 3.0;            // gap between adjacent main zones
+    const double zone_pitch    = zone + zone_spacing;
+    // Three centers: -pitch, 0, +pitch
+    const double zone_S_xc     = -zone_pitch;
+    const double zone_G_xc     =  0.0;
+    const double zone_W_xc     = +zone_pitch;
+    const double scale_bar_y   = -(half - 8.0);  // scale bar along bottom inset 8mm from edge
+    const double scale_bar_len = 10.0;            // 10mm scale
+    const double scale_bar_x0  = -scale_bar_len / 2.0;
+
+    // ---- Fiducials (4× filled square at known XY) ----
+    //      Single mesh per fiducial to avoid gcode-path conflicts from overlapping ModelObjects
+    //      (cross shape needed two perpendicular bars overlapping at the center). A 5×5 solid
+    //      square is just as detectable by AI-vision corner-finders as a "+" — the alignment
+    //      pipeline locates the centroid of each filled blob.
+    if (params.fiducials) {
+        struct { double x, y; const char* name; } fids[4] = {
+            { -fid_off, -fid_off, "fid_BL" },
+            { +fid_off, -fid_off, "fid_BR" },
+            { +fid_off, +fid_off, "fid_TR" },
+            { -fid_off, +fid_off, "fid_TL" },
+        };
+        const double fid_size = 5.0;
+        for (auto &f : fids) {
+            ModelObject* mo = add_box_object(model, f.name,
+                                             f.x, f.y, fid_size, fid_size, ZCAL_LAYER_THICKNESS);
+            set_solid_pad_config(mo);
+        }
+    }
+
+    // ---- Scale bar (1 baseline + 11 ticks at 1mm intervals) ----
+    if (params.scale_bar) {
+        // Baseline: 10mm long, 0.5mm wide, at y=scale_bar_y.
+        ModelObject* baseline = add_box_object(model, "scale_baseline",
+                                                scale_bar_x0 + scale_bar_len / 2.0, scale_bar_y,
+                                                scale_bar_len, 0.5, ZCAL_LAYER_THICKNESS);
+        set_solid_pad_config(baseline);
+
+        // 11 ticks: short verticals at x = scale_bar_x0 + 0, 1, 2, ..., 10mm.
+        for (int i = 0; i <= 10; ++i) {
+            const double tx = scale_bar_x0 + static_cast<double>(i);
+            const double tick_h = (i == 0 || i == 10) ? 3.0
+                                : (i == 5) ? 2.5 : 1.5;  // longer ticks at ends + midpoint for AI orientation
+            ModelObject* tick = add_box_object(model,
+                                               (boost::format("scale_tick_%1%mm") % i).str(),
+                                               tx, scale_bar_y - 0.5 - tick_h / 2.0,
+                                               0.45, tick_h, ZCAL_LAYER_THICKNESS);
+            set_solid_pad_config(tick);
+        }
+    }
+
+    // ---- Zone S (solid concentric pad) ----
+    {
+        ModelObject* mo = add_box_object(model, "zone_S_solid",
+                                         zone_S_xc, row_y,
+                                         zone, zone, ZCAL_LAYER_THICKNESS);
+        set_solid_pad_config(mo);
+    }
+
+    // ---- Zone G (3 gap-spacing pairs at 0.5/0.6/0.8mm gaps) ----
+    {
+        // 3 horizontal pairs of single-perimeter walls. Each pair = 2 walls 20mm long with
+        // a specific edge-to-edge gap. Pairs stacked vertically inside the zone, 5mm apart.
+        const double wall_len = 20.0;
+        const double pair_y_offsets[3] = { +8.0,  0.0, -8.0 };  // top, middle, bottom inside zone
+        const double pair_gaps[3]      = {  0.5,  0.6,  0.8 };  // gap to evaluate per pair
+        for (int p = 0; p < 3; ++p) {
+            const double gap = pair_gaps[p];
+            // Two walls centered on (zone_G_xc, row_y + pair_y_offsets[p]); each wall is
+            // 0.45mm wide; gap is between their inner edges.
+            const double wall_half_gap = (gap + ZCAL_THIN_WALL_WIDTH) / 2.0;
+            const double yc_top = row_y + pair_y_offsets[p] + wall_half_gap;
+            const double yc_bot = row_y + pair_y_offsets[p] - wall_half_gap;
+            ModelObject* w_top = add_box_object(model,
+                                                (boost::format("zone_G_gap%1%_top") % gap).str(),
+                                                zone_G_xc, yc_top,
+                                                wall_len, ZCAL_THIN_WALL_WIDTH, ZCAL_LAYER_THICKNESS);
+            ModelObject* w_bot = add_box_object(model,
+                                                (boost::format("zone_G_gap%1%_bot") % gap).str(),
+                                                zone_G_xc, yc_bot,
+                                                wall_len, ZCAL_THIN_WALL_WIDTH, ZCAL_LAYER_THICKNESS);
+            set_single_wall_config(w_top);
+            set_single_wall_config(w_bot);
+        }
+    }
+
+    // ---- Zone W (3 freestanding single-perimeter walls) ----
+    {
+        const double wall_len = 10.0;
+        const double wall_dy  = 6.0;  // vertical spacing between walls
+        for (int i = 0; i < 3; ++i) {
+            const double yc = row_y + (i - 1) * wall_dy;  // -wall_dy, 0, +wall_dy
+            ModelObject* mo = add_box_object(model,
+                                             (boost::format("zone_W_wall_%1%") % i).str(),
+                                             zone_W_xc, yc,
+                                             wall_len, ZCAL_THIN_WALL_WIDTH, ZCAL_LAYER_THICKNESS);
+            set_single_wall_config(mo);
+        }
+    }
+
+    // ---- Zone C (4 small corner loops) ----
+    {
+        struct { double x, y; const char* name; } corners[4] = {
+            { -corner_off, -corner_off, "zone_C_BL" },
+            { +corner_off, -corner_off, "zone_C_BR" },
+            { +corner_off, +corner_off, "zone_C_TR" },
+            { -corner_off, +corner_off, "zone_C_TL" },
+        };
+        const double loop_size = 6.0;  // small ring footprint
+        for (auto &c : corners) {
+            ModelObject* mo = add_box_object(model, c.name,
+                                             c.x, c.y, loop_size, loop_size, ZCAL_LAYER_THICKNESS);
+            set_corner_loop_config(mo);
+        }
+    }
+
+    // ---- Print-config overrides — single layer hard cap ----
+    full_config.set_key_value("layer_height", new ConfigOptionFloat(ZCAL_LAYER_THICKNESS));
+    full_config.set_key_value("initial_layer_print_height", new ConfigOptionFloat(ZCAL_LAYER_THICKNESS));
+    // Disable brim globally (per-object configs handle per-zone behavior; we don't want a
+    // global brim wrapping the whole cluster).
+    full_config.set_key_value("brim_type", new ConfigOptionEnum<BrimType>(btNoBrim));
+    full_config.set_key_value("brim_width", new ConfigOptionFloat(0.0));
+    // Skirt: 1 loop, 4mm offset — useful for the operator to see priming was clean.
+    full_config.set_key_value("skirt_loops", new ConfigOptionInt(1));
+    full_config.set_key_value("skirt_distance", new ConfigOptionFloat(4.0));
+    // Light first-layer speed — the test only matters if the first layer is laid clean.
+    full_config.set_key_value("initial_layer_speed", new ConfigOptionFloat(25.0));
+    // Resonance/wrapping detection don't apply to a single-layer pad — neutralize both.
+    full_config.set_key_value("enable_wrapping_detection", new ConfigOptionBool(false));
+    full_config.set_key_value("resonance_avoidance", new ConfigOptionBool(false));
+
+    BOOST_LOG_TRIVIAL(info) << boost::format("cli_build_zcal_pattern: plate=%1%mm zone=%2%mm fiducials=%3% scale_bar=%4% objects=%5%")
+        % plate % zone % params.fiducials % params.scale_bar % model.objects.size();
+}
+
+// ----------------------------------------------------------------
+// Metadata-comment injection (post-processes the sliced gcode file)
+// ----------------------------------------------------------------
+//
+// Reads the gcode, finds the first non-comment / non-blank line in the header block, and
+// prepends a block of coordinate ground-truth comments. AI-vision tooling reads this block
+// instead of inferring zone positions from geometry.
+bool cli_inject_zcal_metadata(const std::string &gcode_path, const CLIZCalParams &params,
+                              const DynamicPrintConfig &full_config)
+{
+    if (!boost::filesystem::exists(gcode_path)) {
+        BOOST_LOG_TRIVIAL(error) << "cli_inject_zcal_metadata: missing gcode file " << gcode_path;
+        return false;
+    }
+
+    // Resolve bed center from printable_area to convert model coords → bed coords for the metadata.
+    Vec2d bed_center(0.0, 0.0);
+    if (const ConfigOptionPoints *p = full_config.option<ConfigOptionPoints>("printable_area"); p && !p->values.empty()) {
+        BoundingBoxf bb;
+        for (const Vec2d &v : p->values) bb.merge(v);
+        bed_center = bb.center();
+    }
+
+    const double plate    = params.plate_size;
+    const double zone     = params.zone_size;
+    const double half     = plate / 2.0;
+    const double fid_off  = half - 5.0;
+    const double corner_off = half - 12.0;
+    const double row_y    = 8.0;
+    const double zone_pitch = zone + 3.0;
+    const double scale_bar_y = -(half - 8.0);
+
+    auto bed_x = [&](double mx) { return bed_center.x() + mx; };
+    auto bed_y = [&](double my) { return bed_center.y() + my; };
+
+    std::ostringstream meta;
+    meta << "; ---- ORCA Z-OFFSET CALIBRATION METADATA ----\n";
+    meta << "; calibration_type = z-offset-pattern\n";
+    meta << boost::format("; plate_size_mm = %1$.1f\n") % plate;
+    meta << boost::format("; zone_size_mm = %1$.1f\n") % zone;
+    meta << boost::format("; bed_center_xy = %1$.2f,%2$.2f\n") % bed_center.x() % bed_center.y();
+    if (params.fiducials) {
+        meta << boost::format("; fiducial_positions = X%1$.2f,Y%2$.2f X%3$.2f,Y%4$.2f X%5$.2f,Y%6$.2f X%7$.2f,Y%8$.2f\n")
+            % bed_x(-fid_off) % bed_y(-fid_off)
+            % bed_x(+fid_off) % bed_y(-fid_off)
+            % bed_x(+fid_off) % bed_y(+fid_off)
+            % bed_x(-fid_off) % bed_y(+fid_off);
+    }
+    if (params.scale_bar) {
+        meta << boost::format("; scale_bar_origin = X%1$.2f,Y%2$.2f\n") % bed_x(-5.0) % bed_y(scale_bar_y);
+        meta << "; scale_bar_length_mm = 10\n";
+        meta << "; scale_bar_tick_count = 11\n";
+    }
+    meta << boost::format("; zone_S_center = X%1$.2f,Y%2$.2f  zone_S_size = %3$.1f\n") % bed_x(-zone_pitch) % bed_y(row_y) % zone;
+    meta << boost::format("; zone_G_center = X%1$.2f,Y%2$.2f  zone_G_size = %3$.1f  zone_G_gaps_mm = 0.5,0.6,0.8\n") % bed_x(0.0) % bed_y(row_y) % zone;
+    meta << boost::format("; zone_W_center = X%1$.2f,Y%2$.2f  zone_W_size = %3$.1f  zone_W_wall_count = 3\n") % bed_x(+zone_pitch) % bed_y(row_y) % zone;
+    meta << boost::format("; zone_C_corners = X%1$.2f,Y%2$.2f X%3$.2f,Y%4$.2f X%5$.2f,Y%6$.2f X%7$.2f,Y%8$.2f\n")
+        % bed_x(-corner_off) % bed_y(-corner_off)
+        % bed_x(+corner_off) % bed_y(-corner_off)
+        % bed_x(+corner_off) % bed_y(+corner_off)
+        % bed_x(-corner_off) % bed_y(+corner_off);
+    meta << "; ---- END Z-OFFSET CALIBRATION METADATA ----\n";
+
+    // Insert right after the HEADER_BLOCK_START marker (consistent with other Orca metadata).
+    std::ifstream in(gcode_path);
+    if (!in) return false;
+    std::ostringstream body;
+    body << in.rdbuf();
+    in.close();
+    std::string contents = body.str();
+
+    const std::string marker = "; HEADER_BLOCK_START";
+    const size_t marker_pos = contents.find(marker);
+    size_t insert_pos = 0;
+    if (marker_pos != std::string::npos) {
+        const size_t line_end = contents.find('\n', marker_pos);
+        insert_pos = (line_end != std::string::npos) ? line_end + 1 : marker_pos + marker.size();
+    } else {
+        // No HEADER_BLOCK marker — fall through to the very top, after any leading shebang.
+        insert_pos = 0;
+    }
+    contents.insert(insert_pos, meta.str());
+
+    std::ofstream out(gcode_path, std::ios::trunc);
+    if (!out) return false;
+    out.write(contents.data(), contents.size());
+    out.close();
+    BOOST_LOG_TRIVIAL(info) << "cli_inject_zcal_metadata: wrote metadata block to " << gcode_path;
+    return true;
 }
 
 }

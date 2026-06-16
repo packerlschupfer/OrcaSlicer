@@ -27,6 +27,7 @@ enum class CLICalibType {
     FlowRate_YOLO_Perfectionist,
     FlowRate_Pass1,
     FlowRate_Pass2,
+    ZOffsetPattern,
 };
 
 // Maps a CLI string ("flow-yolo-recommended", etc.) to the enum + a 3MF resource path.
@@ -55,6 +56,44 @@ void cli_flowrate_params_for_type(CLICalibType type, int &pass, bool &is_linear)
 
 // Map the CLI's --flow-pattern string to an InfillPattern. Default ipArchimedeanChords on bad input.
 InfillPattern cli_parse_flow_pattern(const std::string &name);
+
+// ============================================================
+// Z-offset / Live-Z calibration pattern (scanner-friendly).
+// ============================================================
+//
+// Builds a procedural single-layer test plate optimized for AI-vision analysis of a flatbed
+// scanner image. The output gcode contains:
+//   - 4 fiducial marks at corner positions for auto-alignment / de-skew
+//   - A 10mm scale bar with 1mm ticks for DPI cross-verification
+//   - Zone S (solid): squish uniformity indicator (concentric infill pad)
+//   - Zone G (gaps):  3 line-pairs at 0.5/0.6/0.8mm spacing — under-Z closes gaps, over-Z leaves all open
+//   - Zone W (walls): 3 single-perimeter freestanding walls — sensitive to over-squish
+//   - Zone C (corners): 4 small loops at the 4 plate corners — cross-bed Z uniformity
+// Coordinates of every primitive are written to the gcode header as comments so downstream
+// AI-vision tooling can map scan pixels to test zones without inferring from geometry.
+//
+// The plate is built by populating the (pre-loaded placeholder) Model with TriangleMesh box
+// primitives — one ModelObject per primitive — with per-object configs that force each zone
+// to print as intended (single perimeter for W, solid concentric for S, etc.). The CLI's
+// standard --slice 0 pipeline handles PRINT_START, temperatures, and extrusion math; this
+// generator only owns the geometry + per-object overrides + a single-layer hard cap via
+// layer_height + initial_layer_print_height = 0.20mm.
+
+struct CLIZCalParams {
+    double plate_size = 100.0;     // mm, total plate footprint (square)
+    double zone_size  = 30.0;      // mm, individual zone footprint for S/G/W
+    bool   fiducials  = true;      // 4 corner fiducial marks for AI-vision auto-alignment
+    bool   scale_bar  = true;      // 0-10mm scale bar with 1mm ticks for DPI verification
+    bool   zone_labels = false;    // v1: skip stick-font labels (metadata comments suffice)
+};
+
+void cli_build_zcal_pattern(Model &model, DynamicPrintConfig &full_config, const CLIZCalParams &params);
+
+// Post-process the sliced gcode to inject coordinate metadata comments. Called by OrcaSlicer.cpp
+// after --slice 0 produces the gcode for the z-offset-pattern. Reads bed_center from the config
+// to convert model-space coordinates to bed coordinates before writing. Returns true on success.
+bool cli_inject_zcal_metadata(const std::string &gcode_path, const CLIZCalParams &params,
+                              const DynamicPrintConfig &full_config);
 
 }
 

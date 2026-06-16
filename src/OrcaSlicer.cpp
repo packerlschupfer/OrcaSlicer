@@ -1493,11 +1493,12 @@ int CLI::run(int argc, char **argv)
     //      --load-filaments chain (see the second injection point below).
     Slic3r::CLICalibType cli_calib_type = Slic3r::CLICalibType::NoCalib;
     Slic3r::CLIFlowRateParams cli_flow_params;
+    Slic3r::CLIZCalParams     cli_zcal_params;
     if (ConfigOptionString *opt = m_config.option<ConfigOptionString>("calibrate_type"); opt && !opt->value.empty()) {
         cli_calib_type = Slic3r::cli_calib_type_from_string(opt->value);
         if (cli_calib_type == Slic3r::CLICalibType::NoCalib) {
             boost::nowide::cerr << "Invalid --calibrate-type value: " << opt->value
-                << ". Expected one of: flow-yolo-recommended, flow-yolo-perfectionist, flow-pass1, flow-pass2." << std::endl;
+                << ". Expected one of: flow-yolo-recommended, flow-yolo-perfectionist, flow-pass1, flow-pass2, z-offset-pattern." << std::endl;
             record_exit_reson(outfile_dir, CLI_INVALID_PARAMS, 0, cli_errors[CLI_INVALID_PARAMS], sliced_info);
             flush_and_exit(CLI_INVALID_PARAMS);
         }
@@ -1514,20 +1515,35 @@ int CLI::run(int argc, char **argv)
         m_input_files.clear();
         m_input_files.push_back(resource);
 
-        // Resolve flow-rate sub-flags
-        Slic3r::cli_flowrate_params_for_type(cli_calib_type, cli_flow_params.pass, cli_flow_params.is_linear);
-        if (ConfigOptionString *p = m_config.option<ConfigOptionString>("flow_pattern"); p)
-            cli_flow_params.pattern = Slic3r::cli_parse_flow_pattern(p->value);
-        if (ConfigOptionBool *b = m_config.option<ConfigOptionBool>("flow_brim"); b)
-            cli_flow_params.brim_enabled = b->value;
-        if (ConfigOptionFloat *w = m_config.option<ConfigOptionFloat>("flow_brim_width"); w)
-            cli_flow_params.brim_width = w->value;
-        if (ConfigOptionFloat *g = m_config.option<ConfigOptionFloat>("flow_brim_gap"); g)
-            cli_flow_params.brim_extra_gap = g->value;
-        if (ConfigOptionInt *n = m_config.option<ConfigOptionInt>("flow_blocks"); n)
-            cli_flow_params.max_blocks = n->value;
-        if (ConfigOptionFloat *r = m_config.option<ConfigOptionFloat>("flow_range"); r)
-            cli_flow_params.max_modifier = r->value;
+        if (cli_calib_type == Slic3r::CLICalibType::ZOffsetPattern) {
+            // Resolve z-offset sub-flags. The placeholder 3MF is loaded by the normal pipeline,
+            // then cli_build_zcal_pattern wipes it and rebuilds from procedural primitives.
+            if (ConfigOptionFloat *s = m_config.option<ConfigOptionFloat>("zcal_size"); s)
+                cli_zcal_params.plate_size = s->value;
+            if (ConfigOptionFloat *z = m_config.option<ConfigOptionFloat>("zcal_zone_size"); z)
+                cli_zcal_params.zone_size = z->value;
+            if (ConfigOptionBool *b = m_config.option<ConfigOptionBool>("zcal_fiducials"); b)
+                cli_zcal_params.fiducials = b->value;
+            if (ConfigOptionBool *b = m_config.option<ConfigOptionBool>("zcal_scale_bar"); b)
+                cli_zcal_params.scale_bar = b->value;
+            if (ConfigOptionBool *b = m_config.option<ConfigOptionBool>("zcal_zone_labels"); b)
+                cli_zcal_params.zone_labels = b->value;
+        } else {
+            // Resolve flow-rate sub-flags
+            Slic3r::cli_flowrate_params_for_type(cli_calib_type, cli_flow_params.pass, cli_flow_params.is_linear);
+            if (ConfigOptionString *p = m_config.option<ConfigOptionString>("flow_pattern"); p)
+                cli_flow_params.pattern = Slic3r::cli_parse_flow_pattern(p->value);
+            if (ConfigOptionBool *b = m_config.option<ConfigOptionBool>("flow_brim"); b)
+                cli_flow_params.brim_enabled = b->value;
+            if (ConfigOptionFloat *w = m_config.option<ConfigOptionFloat>("flow_brim_width"); w)
+                cli_flow_params.brim_width = w->value;
+            if (ConfigOptionFloat *g = m_config.option<ConfigOptionFloat>("flow_brim_gap"); g)
+                cli_flow_params.brim_extra_gap = g->value;
+            if (ConfigOptionInt *n = m_config.option<ConfigOptionInt>("flow_blocks"); n)
+                cli_flow_params.max_blocks = n->value;
+            if (ConfigOptionFloat *r = m_config.option<ConfigOptionFloat>("flow_range"); r)
+                cli_flow_params.max_modifier = r->value;
+        }
         // Force --slice 0 if the user didn't pass one explicitly — calibration is meaningless without a slice action.
         if (plate_to_slice <= 0 && !slice_option)
             plate_to_slice = 0; // already 0; just being explicit
@@ -3545,7 +3561,11 @@ int CLI::run(int argc, char **argv)
             record_exit_reson(outfile_dir, CLI_DATA_FILE_ERROR, 0, cli_errors[CLI_DATA_FILE_ERROR], sliced_info);
             flush_and_exit(CLI_DATA_FILE_ERROR);
         }
-        Slic3r::cli_apply_flowrate_calib(m_models[0], m_print_config, cli_flow_params);
+        if (cli_calib_type == Slic3r::CLICalibType::ZOffsetPattern) {
+            Slic3r::cli_build_zcal_pattern(m_models[0], m_print_config, cli_zcal_params);
+        } else {
+            Slic3r::cli_apply_flowrate_calib(m_models[0], m_print_config, cli_flow_params);
+        }
 
         //ORCA: center the calibration model on the bed (matches the GUI's add_model behavior).
         //      Compute the bed center from current_printable_area (loaded earlier), then translate
@@ -6472,6 +6492,12 @@ int CLI::run(int argc, char **argv)
                                     outfile = print_fff->export_gcode(outfile, gcode_result, nullptr);
                                     time_using_cache = time_using_cache + ((long long)Slic3r::Utils::get_current_time_utc() - temp_time);
                                     BOOST_LOG_TRIVIAL(info) << "export_gcode finished: time_using_cache update to " << time_using_cache << " secs.";
+                                    //ORCA: --calibrate-type z-offset-pattern post-process — inject coordinate
+                                    //      metadata comments into the just-written gcode header so AI-vision
+                                    //      tooling can map scan pixels to test zones without inferring from geometry.
+                                    if (cli_calib_type == Slic3r::CLICalibType::ZOffsetPattern && !outfile.empty()) {
+                                        Slic3r::cli_inject_zcal_metadata(outfile, cli_zcal_params, m_print_config);
+                                    }
                                     if (gcode_result && gcode_result->gcode_check_result.error_code) {
                                         //found gcode error
                                         if ((gcode_result->gcode_check_result.error_code & 0b11100)>0)
