@@ -1529,6 +1529,14 @@ int CLI::run(int argc, char **argv)
                 cli_zcal_params.scale_bar = b->value;
             if (ConfigOptionBool *b = m_config.option<ConfigOptionBool>("zcal_zone_labels"); b)
                 cli_zcal_params.zone_labels = b->value;
+            if (ConfigOptionBool *b = m_config.option<ConfigOptionBool>("zcal_frame"); b)
+                cli_zcal_params.frame = b->value;
+            if (ConfigOptionInt *n = m_config.option<ConfigOptionInt>("zcal_frame_layers"); n)
+                cli_zcal_params.frame_layers = n->value;
+            if (ConfigOptionFloat *fw = m_config.option<ConfigOptionFloat>("zcal_frame_width"); fw)
+                cli_zcal_params.frame_width = fw->value;
+            if (ConfigOptionFloat *fm = m_config.option<ConfigOptionFloat>("zcal_frame_margin"); fm)
+                cli_zcal_params.frame_margin = fm->value;
         } else if (cli_calib_type == Slic3r::CLICalibType::TempTower) {
             if (ConfigOptionFloat *s = m_config.option<ConfigOptionFloat>("temp_tower_start"); s)
                 cli_tower_params.start = s->value;
