@@ -169,6 +169,52 @@ void cli_apply_flowrate_calib(Model &model, DynamicPrintConfig &full_config, con
         }
     }
 
+    //ORCA: brim auto-spacing — line-for-line port of the GUI block at Plater.cpp:13076-13115.
+    //      Native 3MF spacing is 31mm with 30mm blocks (1mm edge gap); a 2mm brim would merge
+    //      adjacent block brims. Scale object positions outward from the cluster centroid by the
+    //      smallest uniform factor that widens every gap to required_gap = 2*brim_width + extra_gap.
+    if (params.brim_enabled && model.objects.size() >= 2) {
+        std::vector<Vec2d>         centers;
+        std::vector<BoundingBoxf3> bbs;
+        centers.reserve(model.objects.size());
+        bbs.reserve(model.objects.size());
+        for (auto mo : model.objects) {
+            if (!mo) continue;
+            const BoundingBoxf3 bb = mo->instance_bounding_box(0);
+            bbs.push_back(bb);
+            centers.emplace_back(0.5 * (bb.min.x() + bb.max.x()), 0.5 * (bb.min.y() + bb.max.y()));
+        }
+        Vec2d centroid(0.0, 0.0);
+        for (const auto& c : centers) centroid += c;
+        centroid /= double(centers.size());
+
+        double min_center_dist = std::numeric_limits<double>::infinity();
+        double min_edge_gap    = std::numeric_limits<double>::infinity();
+        for (size_t i = 0; i < model.objects.size(); ++i) {
+            for (size_t j = i + 1; j < model.objects.size(); ++j) {
+                const double cd = (centers[i] - centers[j]).norm();
+                if (cd < min_center_dist) min_center_dist = cd;
+                const double dx = std::max(0.0, std::max(bbs[i].min.x() - bbs[j].max.x(), bbs[j].min.x() - bbs[i].max.x()));
+                const double dy = std::max(0.0, std::max(bbs[i].min.y() - bbs[j].max.y(), bbs[j].min.y() - bbs[i].max.y()));
+                const double eg = std::max(dx, dy); // axis-aligned grid: the larger axial gap is the actual gap
+                if (eg < min_edge_gap) min_edge_gap = eg;
+            }
+        }
+
+        const double required_gap = 2.0 * params.brim_width + params.brim_extra_gap;
+        if (min_center_dist > 0.0 && min_edge_gap < required_gap) {
+            const double extra_needed = required_gap - min_edge_gap;
+            const double scale        = 1.0 + extra_needed / min_center_dist;
+            for (size_t i = 0; i < model.objects.size(); ++i) {
+                const Vec2d new_center = centroid + scale * (centers[i] - centroid);
+                const Vec2d delta      = new_center - centers[i];
+                model.objects[i]->translate_instances(Vec3d(delta.x(), delta.y(), 0.0));
+            }
+            BOOST_LOG_TRIVIAL(info) << boost::format("cli_apply_flowrate_calib: brim auto-spacing required_gap=%1$.2f min_edge_gap=%2$.2f scale=%3$.4f")
+                % required_gap % min_edge_gap % scale;
+        }
+    }
+
     //ORCA: print-config overrides — the GUI applies these at the END of
     //      adjust_settings_for_flowrate_calib (Plater.cpp:13117-13121, plus
     //      :13042 max_volumetric_extrusion_rate_slope inside the per-object loop).
