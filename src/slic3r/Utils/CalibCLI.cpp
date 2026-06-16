@@ -59,6 +59,79 @@ InfillPattern cli_parse_flow_pattern(const std::string &name)
     return ipArchimedeanChords;
 }
 
+//ORCA: parse the modifier from a flow-rate calibration object name. Filename format:
+//      "flowrate_0" / "flowrate_0.035" / "flowrate_m0.04" (m = minus). Returns the modifier
+//      as a float; defaults to 1.0 on parse failure (matches GUI fallback at Plater.cpp:13054).
+//      Sets ok=false on parse failure so callers (like the block filter) can skip the object.
+static float parse_flow_modifier(const std::string &object_name, bool &ok)
+{
+    ok = false;
+    if (object_name.length() <= 9) return 1.0f;
+    std::string mod_str = object_name.substr(9);
+    if (!mod_str.empty() && mod_str[0] == 'm')
+        mod_str[0] = '-';
+    const std::string saved_locale = std::setlocale(LC_NUMERIC, nullptr);
+    std::setlocale(LC_NUMERIC, "C");
+    float modifier = 1.0f;
+    try {
+        modifier = std::stof(mod_str);
+        ok = true;
+    } catch (...) {}
+    std::setlocale(LC_NUMERIC, saved_locale.c_str());
+    return modifier;
+}
+
+//ORCA: filter flow-rate calibration blocks by count and/or |modifier|. Removes objects whose
+//      modifier is too far from zero. Both filters compose (intersection). Symmetric removal
+//      keeps the cluster centered on the existing centroid, so callers don't need to re-center.
+static void filter_flowrate_blocks(Model &model, int max_blocks, double max_modifier)
+{
+    const bool count_filter = (max_blocks > 0 && static_cast<int>(model.objects.size()) > max_blocks);
+    const bool range_filter = (max_modifier > 0.0);
+    if (!count_filter && !range_filter) return;
+
+    struct Entry { size_t idx; float mod; float abs_mod; };
+    std::vector<Entry> entries;
+    entries.reserve(model.objects.size());
+    for (size_t i = 0; i < model.objects.size(); ++i) {
+        bool ok = false;
+        const float mod = parse_flow_modifier(model.objects[i]->name, ok);
+        if (!ok) continue; // unparseable name — leave in place (treat as keeper)
+        entries.push_back({i, mod, std::fabs(mod)});
+    }
+    if (entries.empty()) return;
+
+    std::vector<bool> keep(model.objects.size(), true);
+    // Range filter: drop blocks where |modifier| > max_modifier.
+    if (range_filter) {
+        for (const auto& e : entries)
+            if (e.abs_mod > max_modifier + 1e-9) keep[e.idx] = false;
+    }
+    // Count filter: among still-kept entries, keep only the N closest to 0.
+    if (count_filter) {
+        std::vector<Entry> kept_entries;
+        for (const auto& e : entries)
+            if (keep[e.idx]) kept_entries.push_back(e);
+        std::sort(kept_entries.begin(), kept_entries.end(),
+                  [](const Entry& a, const Entry& b) { return a.abs_mod < b.abs_mod; });
+        for (size_t k = static_cast<size_t>(max_blocks); k < kept_entries.size(); ++k)
+            keep[kept_entries[k].idx] = false;
+    }
+
+    // Erase from highest index down via Model::delete_object so destruction goes through the
+    // friend channel (ModelObject's dtor is private to the Model factory). Indices stay valid
+    // because we iterate top-down.
+    size_t removed = 0;
+    for (size_t i = model.objects.size(); i-- > 0; ) {
+        if (!keep[i]) {
+            model.delete_object(i);
+            ++removed;
+        }
+    }
+    BOOST_LOG_TRIVIAL(info) << boost::format("cli_apply_flowrate_calib: block filter removed %1% objects (max_blocks=%2% max_modifier=%3$.4f), %4% remain")
+        % removed % max_blocks % max_modifier % model.objects.size();
+}
+
 //ORCA: Headless port of Plater::adjust_settings_for_flowrate_calib (Plater.cpp:12967). The original
 //      function scaled the model via wxGetApp().plater()->canvas3D()->get_selection().scale(...),
 //      which is GUI-bound; here we apply the same scale factors directly via ModelObject::scale().
@@ -70,6 +143,10 @@ void cli_apply_flowrate_calib(Model &model, DynamicPrintConfig &full_config, con
         BOOST_LOG_TRIVIAL(error) << "cli_apply_flowrate_calib: invalid pass " << params.pass;
         return;
     }
+
+    //ORCA: subset the loaded block-pair objects per --flow-blocks / --flow-range before any
+    //      per-object/per-config work. Symmetric (keeps blocks closest to modifier=0).
+    filter_flowrate_blocks(model, params.max_blocks, params.max_modifier);
 
     const ConfigOptionFloats *nozzle_diameter_config = full_config.option<ConfigOptionFloats>("nozzle_diameter");
     if (!nozzle_diameter_config || nozzle_diameter_config->values.empty()) {
@@ -143,17 +220,9 @@ void cli_apply_flowrate_calib(Model &model, DynamicPrintConfig &full_config, con
         //        linear:     (cur_flowrate + modifier) / cur_flowrate
         //        non-linear: 1.0 + modifier / 100
         //      Identical to the GUI logic at Plater.cpp:13044-13065.
-        std::string obj_name = mo->name;
-        if (obj_name.length() > 9) {
-            obj_name = obj_name.substr(9);
-            if (!obj_name.empty() && obj_name[0] == 'm')
-                obj_name[0] = '-';
-            const std::string saved_locale = std::setlocale(LC_NUMERIC, nullptr);
-            std::setlocale(LC_NUMERIC, "C");
-            float modifier = 1.0f;
-            try { modifier = std::stof(obj_name); } catch (...) {}
-            std::setlocale(LC_NUMERIC, saved_locale.c_str());
-
+        bool mod_ok = false;
+        const float modifier = parse_flow_modifier(mo->name, mod_ok);
+        if (mod_ok) {
             const float pfr = params.is_linear
                 ? (static_cast<float>(cur_flowrate) + modifier) / static_cast<float>(cur_flowrate)
                 : 1.0f + modifier / 100.0f;
