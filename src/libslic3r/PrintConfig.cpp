@@ -10935,15 +10935,17 @@ CLIMiscConfigDef::CLIMiscConfigDef()
     //ORCA: sub-flags for --calibrate-type z-offset-pattern.
     def = this->add("zcal_size", coFloat);
     def->label = L("Z-cal plate size");
-    def->tooltip = L("Total footprint of the z-offset calibration plate in mm. Default 100.");
+    def->tooltip = L("Total footprint of the z-offset calibration plate in mm. Default 60 (v8 compact). "
+                     "Pass --zcal-size 100 for the v7 wide layout.");
     def->cli_params = "mm";
-    def->set_default_value(new ConfigOptionFloat(100.0));
+    def->set_default_value(new ConfigOptionFloat(60.0));
 
     def = this->add("zcal_zone_size", coFloat);
     def->label = L("Z-cal zone size");
-    def->tooltip = L("Individual zone footprint (S/G/W) in mm. Default 30.");
+    def->tooltip = L("Individual zone footprint (S/G/W) in mm. Default 18 (v8 compact). "
+                     "Use --zcal-zone-size 30 with --zcal-size 100 for the v7 wide layout.");
     def->cli_params = "mm";
-    def->set_default_value(new ConfigOptionFloat(30.0));
+    def->set_default_value(new ConfigOptionFloat(18.0));
 
     def = this->add("zcal_fiducials", coBool);
     def->label = L("Z-cal fiducial marks");
@@ -11008,6 +11010,27 @@ CLIMiscConfigDef::CLIMiscConfigDef()
     def->tooltip = L("Place 1/2/3 small dots beside zones S/G/W so AI-vision can attribute any zone "
                      "fragment back to its source. Default ON.");
     def->set_default_value(new ConfigOptionBool(true));
+
+    def = this->add("zcal_grid", coBool);
+    def->label = L("Z-cal structural grid");
+    def->tooltip = L("Add a rectangular grid mesh covering the interior of the frame. Each grid line "
+                     "is a thin single-perimeter wall; lines bond to every island via 0.5mm overlap. "
+                     "Replaces single struts with a rebar-like web that distributes peel tension across "
+                     "many connections. Default ON.");
+    def->set_default_value(new ConfigOptionBool(true));
+
+    def = this->add("zcal_grid_pitch", coFloat);
+    def->label = L("Z-cal grid pitch");
+    def->tooltip = L("Spacing between grid lines in mm. Default 4.0 — one cell holds one feature comfortably.");
+    def->cli_params = "mm";
+    def->set_default_value(new ConfigOptionFloat(4.0));
+
+    def = this->add("zcal_grid_over_zones", coBool);
+    def->label = L("Z-cal grid crosses zones");
+    def->tooltip = L("When false (default), grid lines stop at zone/fiducial/C-loop boundaries — "
+                     "the scan sees a clean zone interior. When true, lines cross zones fully; the AI "
+                     "must mask the grid out per the strut polygon list. Default OFF.");
+    def->set_default_value(new ConfigOptionBool(false));
 
     //ORCA: sub-flags for --calibrate-type temp-tower / vol-speed-tower / pa-tower.
     def = this->add("temp_tower_start", coFloat);
