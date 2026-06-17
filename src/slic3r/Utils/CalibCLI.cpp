@@ -450,36 +450,34 @@ void cli_build_zcal_pattern(Model &model, DynamicPrintConfig &full_config, const
     while (!model.objects.empty())
         model.delete_object(model.objects.size() - 1);
 
-    const double plate     = params.plate_size;       // typically 100mm
-    const double zone      = params.zone_size;        // typically 30mm (or smaller if zones don't fit)
+    const double plate     = params.plate_size;       // v8 default 60mm (was 100)
+    const double zone      = params.zone_size;        // v8 default 18mm (was 30)
     const double half      = plate / 2.0;
 
-    // Layout in model space (centered at 0,0). The CLI's center-on-bed step later translates
-    // the whole plate to the bed center.
+    // Layout in model space (centered at 0,0). v8: compact — parts packed close together.
+    // The CLI's center-on-bed step later translates the whole plate to the bed center.
     //
-    //   fid_TL                                           fid_TR
-    //     +                                                 +
-    //     C_TL                                           C_TR
+    //          fid_TL                              fid_TR
+    //            +    C_TL                   C_TR     +
     //
-    //              [ S ]      [ G ]      [ W ]
+    //                 [ S ]     [ G ]     [ W ]   (row at y=0)
     //
-    //     C_BL                                           C_BR
-    //     +     |||||||||||||||||| scale bar               +
-    //   fid_BL                                           fid_BR
+    //                 |||||| scale bar comb |||||  (y = -zone/2 - 5)
+    //            +    C_BL                   C_BR     +
+    //          fid_BL                              fid_BR
     //
-    // Fiducials at ±(half-5), Zone-C loops at ±(half-12), main row of S/G/W at y=+8.
+    // Default 60×60 plate fits 3 × 18mm zones with 1.5mm gaps + corner features.
 
-    const double fid_off       = half - 5.0;     // fiducial center inset from plate edge
-    const double corner_off    = half - 12.0;    // Zone C loop inset
-    const double row_y         = 8.0;            // main S/G/W row y center
-    const double zone_spacing  = 3.0;            // gap between adjacent main zones
+    const double fid_off       = half - 3.0;             // fiducial center 3mm from plate edge
+    const double corner_off    = half - 9.0;             // C-loop center 9mm from plate edge
+    const double row_y         = 0.0;                    // main S/G/W row centered vertically
+    const double zone_spacing  = 1.5;                    // tighter gap between adjacent zones
     const double zone_pitch    = zone + zone_spacing;
-    // Three centers: -pitch, 0, +pitch
     const double zone_S_xc     = -zone_pitch;
     const double zone_G_xc     =  0.0;
     const double zone_W_xc     = +zone_pitch;
-    const double scale_bar_y   = -(half - 8.0);  // scale bar along bottom inset 8mm from edge
-    const double scale_bar_len = 10.0;            // 10mm scale
+    const double scale_bar_y   = -(zone / 2.0 + 5.0);    // 5mm below zone row bottom
+    const double scale_bar_len = 10.0;
     const double scale_bar_x0  = -scale_bar_len / 2.0;
 
     // ---- Fiducials (4× solid pad + optional strut tail, single mesh per fiducial) ----
@@ -849,6 +847,121 @@ void cli_build_zcal_pattern(Model &model, DynamicPrintConfig &full_config, const
                 set_solid_pad_config(mo);
             }
         }
+    }
+
+    // ---- v8 structural grid mesh ----
+    //      A 4mm-pitch rectangular grid covering the interior of the frame. Replaces individual
+    //      struts with a rebar-like web — peel tension is distributed across many small bonds
+    //      instead of riding on single thin lines that can tear. Each grid line is a 0.45mm-wide
+    //      single-perimeter wall, axis-aligned, that overlaps every island it crosses by 0.5mm
+    //      at the boundary (perimeter union → real bond). When grid_over_zones=false (default),
+    //      lines are clipped at zone/fiducial/C-loop boundaries so the calibration signal area
+    //      stays clean for the scanner. When true, lines cross zones fully.
+    if (params.grid && params.frame && params.grid_pitch_mm > 0.1) {
+        const double pitch = params.grid_pitch_mm;
+        const double lw    = ZCAL_THIN_WALL_WIDTH;
+        const double bond  = 0.5; // mm overlap into adjacent meshes for perimeter union
+        const double fid_outer        = fid_off + 2.5;
+        const double frame_inner_edge = fid_outer + params.frame_margin;
+
+        // Forbidden rectangles (model-space bboxes) that grid lines must clip around when
+        // grid_over_zones=false. Each is {x_min, y_min, x_max, y_max}. Margin -bond extends
+        // outward so the line ENDS 0.5mm INSIDE the rect for perimeter bond.
+        struct Rect { double xmin, ymin, xmax, ymax; };
+        std::vector<Rect> forbid;
+        if (!params.grid_over_zones) {
+            // Fiducials (5×5 bbox)
+            forbid.push_back({-fid_off - 2.5, -fid_off - 2.5, -fid_off + 2.5, -fid_off + 2.5});
+            forbid.push_back({+fid_off - 2.5, -fid_off - 2.5, +fid_off + 2.5, -fid_off + 2.5});
+            forbid.push_back({+fid_off - 2.5, +fid_off - 2.5, +fid_off + 2.5, +fid_off + 2.5});
+            forbid.push_back({-fid_off - 2.5, +fid_off - 2.5, -fid_off + 2.5, +fid_off + 2.5});
+            // C-loops (6×6 bbox)
+            forbid.push_back({-corner_off - 3, -corner_off - 3, -corner_off + 3, -corner_off + 3});
+            forbid.push_back({+corner_off - 3, -corner_off - 3, +corner_off + 3, -corner_off + 3});
+            forbid.push_back({+corner_off - 3, +corner_off - 3, +corner_off + 3, +corner_off + 3});
+            forbid.push_back({-corner_off - 3, +corner_off - 3, -corner_off + 3, +corner_off + 3});
+            // Zones S, G, W (zone×zone bbox)
+            forbid.push_back({zone_S_xc - zone/2, row_y - zone/2, zone_S_xc + zone/2, row_y + zone/2});
+            forbid.push_back({zone_G_xc - zone/2, row_y - zone/2, zone_G_xc + zone/2, row_y + zone/2});
+            forbid.push_back({zone_W_xc - zone/2, row_y - zone/2, zone_W_xc + zone/2, row_y + zone/2});
+            // Scale bar comb (full footprint: 11mm wide × ~4mm tall including ticks)
+            forbid.push_back({-5.5, scale_bar_y - 3.0, +5.5, scale_bar_y + 0.5});
+        }
+
+        // Helper: clip a 1D segment [a, b] against a list of forbidden ranges. Each forbidden
+        // range [lo, hi] becomes [lo+bond, hi-bond] so the line's segments extend 0.5mm INTO
+        // each forbidden rect at both ends. Returns a list of surviving sub-segments.
+        auto clip_1d = [&](double a, double b, std::vector<std::pair<double,double>> forbids) {
+            std::vector<std::pair<double,double>> out;
+            // Shrink each forbidden range by bond on each side so the keep-segments extend
+            // 0.5mm INSIDE the forbidden region (for perimeter bond).
+            for (auto &f : forbids) { f.first += bond; f.second -= bond; }
+            // Sort by start.
+            std::sort(forbids.begin(), forbids.end());
+            // Merge overlapping forbidden ranges.
+            std::vector<std::pair<double,double>> merged;
+            for (auto &f : forbids) {
+                if (!merged.empty() && f.first <= merged.back().second)
+                    merged.back().second = std::max(merged.back().second, f.second);
+                else
+                    merged.push_back(f);
+            }
+            // Walk merged ranges and emit complement segments within [a, b].
+            double cursor = a;
+            for (auto &m : merged) {
+                if (m.second < a || m.first > b) continue;
+                if (m.first > cursor) out.emplace_back(cursor, std::min(m.first, b));
+                cursor = std::max(cursor, m.second);
+                if (cursor >= b) break;
+            }
+            if (cursor < b) out.emplace_back(cursor, b);
+            // Drop tiny segments (< 2mm long — extrusion gets unreliable below that).
+            std::vector<std::pair<double,double>> keep;
+            for (auto &s : out)
+                if (s.second - s.first >= 2.0) keep.push_back(s);
+            return keep;
+        };
+
+        // Line extent: from (-frame_inner_edge - bond) to (+frame_inner_edge + bond) so each
+        // grid line extends 0.5mm INTO the frame at both ends.
+        const double line_lo = -frame_inner_edge - bond;
+        const double line_hi = +frame_inner_edge + bond;
+
+        int seg_count = 0;
+        // Horizontal grid lines at y = N × pitch, for integer N such that |y| < frame_inner_edge - 2mm.
+        for (double y = -frame_inner_edge + pitch; y < frame_inner_edge; y += pitch) {
+            std::vector<std::pair<double,double>> forbids_at_y;
+            for (auto &r : forbid)
+                if (r.ymin <= y && y <= r.ymax) forbids_at_y.emplace_back(r.xmin, r.xmax);
+            auto segs = clip_1d(line_lo, line_hi, forbids_at_y);
+            for (auto &s : segs) {
+                const double xc = (s.first + s.second) / 2.0;
+                const double w  = s.second - s.first;
+                ModelObject* mo = add_box_object(model,
+                                                  (boost::format("grid_h_y%1$.1f_seg%2%") % y % seg_count).str(),
+                                                  xc, y, w, lw, ZCAL_LAYER_THICKNESS);
+                set_single_wall_config(mo);
+                ++seg_count;
+            }
+        }
+        // Vertical grid lines at x = N × pitch.
+        for (double x = -frame_inner_edge + pitch; x < frame_inner_edge; x += pitch) {
+            std::vector<std::pair<double,double>> forbids_at_x;
+            for (auto &r : forbid)
+                if (r.xmin <= x && x <= r.xmax) forbids_at_x.emplace_back(r.ymin, r.ymax);
+            auto segs = clip_1d(line_lo, line_hi, forbids_at_x);
+            for (auto &s : segs) {
+                const double yc = (s.first + s.second) / 2.0;
+                const double h  = s.second - s.first;
+                ModelObject* mo = add_box_object(model,
+                                                  (boost::format("grid_v_x%1$.1f_seg%2%") % x % seg_count).str(),
+                                                  x, yc, lw, h, ZCAL_LAYER_THICKNESS);
+                set_single_wall_config(mo);
+                ++seg_count;
+            }
+        }
+        BOOST_LOG_TRIVIAL(info) << boost::format("cli_build_zcal_pattern: grid pitch=%1$.1fmm over_zones=%2% segments=%3%")
+            % pitch % params.grid_over_zones % seg_count;
     }
 
     // ---- Print-config overrides — single layer hard cap ----

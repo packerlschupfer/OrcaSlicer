@@ -86,27 +86,32 @@ InfillPattern cli_parse_flow_pattern(const std::string &name);
 // layer_height + initial_layer_print_height = 0.20mm.
 
 struct CLIZCalParams {
-    double plate_size = 100.0;     // mm, total plate footprint (square)
-    double zone_size  = 30.0;      // mm, individual zone footprint for S/G/W
+    double plate_size = 60.0;      // mm, total plate footprint (square) — v8 compact default
+    double zone_size  = 18.0;      // mm, individual zone footprint for S/G/W — fits 3 zones in a row
     bool   fiducials  = true;      // 4 corner fiducial marks for AI-vision auto-alignment
     bool   scale_bar  = true;      // 0-10mm scale bar with 1mm ticks for DPI verification
     bool   zone_labels = false;    // v1: skip stick-font labels (metadata comments suffice)
     // ORCA: peelable structural frame outside the fiducial bbox. Calibration zones / fiducials /
     //       scale bar / corner-C loops stay strictly single-layer; only the frame is multi-layer.
-    //       Lets the operator peel the print off the textured PEI sheet as one piece so the
-    //       single-layer surface can be scanned directly on the flatbed glass (the sheet adds
-    //       2-3mm depth, blurring the scan past the scanner's focus depth).
-    bool   frame = true;           // toggle the frame
-    int    frame_layers = 2;       // 2 × 0.20mm = 0.40mm — peelable but trivial to remove by hand
-    double frame_width = 3.0;      // mm
-    double frame_margin = 5.0;     // mm gap from fiducial outer bbox to frame inner edge
-    // ORCA: connective struts + fragment IDs (from the struts brief, 2026-06-17). The frame alone
-    //       peels intact but the islands inside it (fiducials, C-loops, S/G/W zones) stay loose
-    //       and fragment on peel. Struts wire everything to the frame. Notches + dots let the AI
-    //       attribute any fragment back to its source even if a strut breaks.
-    bool   struts = true;          // 11 thin first-layer struts: 4 frame→fiducial + 3 frame→zone + 4 frame→C
+    bool   frame = true;
+    int    frame_layers = 2;       // 2 × 0.20mm = 0.40mm
+    double frame_width = 3.0;
+    double frame_margin = 5.0;
+    // ORCA: connective struts + fragment IDs (struts brief, 2026-06-17). With the v8 grid mesh
+    //       (see below), individual struts are largely redundant — the grid wires everything.
+    //       Kept for backward-compat; default ON.
+    bool   struts = true;
     bool   fiducial_ids = true;    // each fiducial becomes an L-shape with notch in a unique corner
     bool   zone_ids = true;        // 1/2/3 small dots beside S/G/W identifying which zone
+    // ORCA v8: structural grid mesh covering the interior of the frame. Replaces single struts
+    //         with a 4mm-pitch rectangular grid (horizontal + vertical lines, each 0.45mm wide
+    //         single-perimeter). The grid bonds to every island via 0.5mm overlap at the
+    //         boundaries — tension is distributed across many connections, no single failure point.
+    //         Like rebar in concrete. Default ON.
+    bool   grid = true;
+    double grid_pitch_mm = 4.0;    // mm spacing between grid lines (horizontal + vertical)
+    bool   grid_over_zones = false; // when false: lines stop at zone/fid/etc. borders (clean signal area)
+                                    // when true:  lines cross zones (grid visible inside scan)
 };
 
 void cli_build_zcal_pattern(Model &model, DynamicPrintConfig &full_config, const CLIZCalParams &params);
