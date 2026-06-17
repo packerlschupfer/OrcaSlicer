@@ -1495,11 +1495,12 @@ int CLI::run(int argc, char **argv)
     Slic3r::CLIFlowRateParams cli_flow_params;
     Slic3r::CLIZCalParams     cli_zcal_params;
     Slic3r::CLITowerParams    cli_tower_params;
+    Slic3r::CLIZLadderParams  cli_zladder_params;
     if (ConfigOptionString *opt = m_config.option<ConfigOptionString>("calibrate_type"); opt && !opt->value.empty()) {
         cli_calib_type = Slic3r::cli_calib_type_from_string(opt->value);
         if (cli_calib_type == Slic3r::CLICalibType::NoCalib) {
             boost::nowide::cerr << "Invalid --calibrate-type value: " << opt->value
-                << ". Expected one of: flow-yolo-recommended, flow-yolo-perfectionist, flow-pass1, flow-pass2, z-offset-pattern, temp-tower, vol-speed-tower, pa-tower." << std::endl;
+                << ". Expected one of: flow-yolo-recommended, flow-yolo-perfectionist, flow-pass1, flow-pass2, z-offset-pattern, temp-tower, vol-speed-tower, pa-tower, retraction-tower, vfa-tower, z-ladder-banded, z-ladder-ramp." << std::endl;
             record_exit_reson(outfile_dir, CLI_INVALID_PARAMS, 0, cli_errors[CLI_INVALID_PARAMS], sliced_info);
             flush_and_exit(CLI_INVALID_PARAMS);
         }
@@ -1583,6 +1584,24 @@ int CLI::run(int argc, char **argv)
                 cli_tower_params.end   = e->value;
             if (ConfigOptionFloat *st = m_config.option<ConfigOptionFloat>("vfa_tower_step"); st)
                 cli_tower_params.step = st->value;
+        } else if (cli_calib_type == Slic3r::CLICalibType::ZLadderBanded ||
+                   cli_calib_type == Slic3r::CLICalibType::ZLadderRamp) {
+            if (ConfigOptionInt   *n = m_config.option<ConfigOptionInt>("zladder_steps"); n)
+                cli_zladder_params.steps = n->value;
+            if (ConfigOptionFloat *s = m_config.option<ConfigOptionFloat>("zladder_start"); s)
+                cli_zladder_params.start_mm = s->value;
+            if (ConfigOptionFloat *e = m_config.option<ConfigOptionFloat>("zladder_end"); e)
+                cli_zladder_params.end_mm = e->value;
+            if (ConfigOptionFloat *bh = m_config.option<ConfigOptionFloat>("zladder_band_height"); bh)
+                cli_zladder_params.band_height_mm = bh->value;
+            if (ConfigOptionFloat *h = m_config.option<ConfigOptionFloat>("zladder_height"); h)
+                cli_zladder_params.height_mm = h->value;
+            if (ConfigOptionFloat *w = m_config.option<ConfigOptionFloat>("zladder_width"); w)
+                cli_zladder_params.width_mm = w->value;
+            if (ConfigOptionBool  *fb = m_config.option<ConfigOptionBool>("zladder_fiducials"); fb)
+                cli_zladder_params.fiducials = fb->value;
+            if (ConfigOptionBool  *sb = m_config.option<ConfigOptionBool>("zladder_scale_bar"); sb)
+                cli_zladder_params.scale_bar = sb->value;
         } else {
             // Resolve flow-rate sub-flags
             Slic3r::cli_flowrate_params_for_type(cli_calib_type, cli_flow_params.pass, cli_flow_params.is_linear);
@@ -3634,6 +3653,10 @@ int CLI::run(int argc, char **argv)
             break;
         case Slic3r::CLICalibType::VFATower:
             Slic3r::cli_apply_vfa_tower(m_models[0], m_print_config, cli_tower_params);
+            break;
+        case Slic3r::CLICalibType::ZLadderBanded:
+        case Slic3r::CLICalibType::ZLadderRamp:
+            Slic3r::cli_build_zladder(m_models[0], m_print_config, cli_calib_type, cli_zladder_params);
             break;
         default:
             Slic3r::cli_apply_flowrate_calib(m_models[0], m_print_config, cli_flow_params);
@@ -6473,6 +6496,15 @@ int CLI::run(int argc, char **argv)
                                             << " start=" << calib_params_for_print.start << " end=" << calib_params_for_print.end << " step=" << calib_params_for_print.step;
                                     }
                                 }
+                                else if (cli_calib_type == Slic3r::CLICalibType::ZLadderBanded ||
+                                         cli_calib_type == Slic3r::CLICalibType::ZLadderRamp) {
+                                    Slic3r::Calib_Params calib_params_for_print;
+                                    if (Slic3r::cli_zladder_get_calib_params(cli_calib_type, cli_zladder_params, m_print_config, calib_params_for_print)) {
+                                        print_fff->set_calib_params(calib_params_for_print);
+                                        BOOST_LOG_TRIVIAL(info) << "calibrate-type z-ladder: set_calib_params mode=" << static_cast<int>(calib_params_for_print.mode)
+                                            << " pad_y_lo=" << calib_params_for_print.ladder_pad_y_lo << " pad_y_hi=" << calib_params_for_print.ladder_pad_y_hi;
+                                    }
+                                }
                                 BOOST_LOG_TRIVIAL(info) << "start Print::process for partplate "<<index+1 << std::endl;
 #if defined(__linux__) || defined(__LINUX__)
                                 BOOST_LOG_TRIVIAL(info) << "cli callback mgr started:  "<<g_cli_callback_mgr.m_started << std::endl;
@@ -6608,8 +6640,12 @@ int CLI::run(int argc, char **argv)
                                              cli_calib_type == Slic3r::CLICalibType::FlowRate_YOLO_Perfectionist ||
                                              cli_calib_type == Slic3r::CLICalibType::FlowRate_Pass1 ||
                                              cli_calib_type == Slic3r::CLICalibType::FlowRate_Pass2) ? &cli_flow_params : nullptr;
+                                        const Slic3r::CLIZLadderParams *zladder_for_emit =
+                                            (cli_calib_type == Slic3r::CLICalibType::ZLadderBanded ||
+                                             cli_calib_type == Slic3r::CLICalibType::ZLadderRamp) ? &cli_zladder_params : nullptr;
                                         Slic3r::cli_emit_calib_outputs(outfile, cli_calib_type, m_print_config,
                                                                        zcal_for_emit, tower_for_emit, flow_for_emit,
+                                                                       zladder_for_emit,
                                                                        m_models.empty() ? nullptr : &m_models[0]);
                                     }
                                     if (gcode_result && gcode_result->gcode_check_result.error_code) {

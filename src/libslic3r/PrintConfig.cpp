@@ -11032,6 +11032,54 @@ CLIMiscConfigDef::CLIMiscConfigDef()
                      "must mask the grid out per the strut polygon list. Default OFF.");
     def->set_default_value(new ConfigOptionBool(false));
 
+    //ORCA: sub-flags for --calibrate-type z-ladder-banded / z-ladder-ramp.
+    def = this->add("zladder_steps", coInt);
+    def->label = L("Z-ladder bands");
+    def->tooltip = L("Number of discrete Z-offset bands in z-ladder-banded mode. Odd recommended "
+                     "so a band 0 = baseline exists. Default 5.");
+    def->cli_params = "N";
+    def->set_default_value(new ConfigOptionInt(5));
+
+    def = this->add("zladder_start", coFloat);
+    def->label = L("Z-ladder start (mm)");
+    def->tooltip = L("Most-up Z-offset (nozzle highest). Default -0.10mm.");
+    def->cli_params = "mm";
+    def->set_default_value(new ConfigOptionFloat(-0.10));
+
+    def = this->add("zladder_end", coFloat);
+    def->label = L("Z-ladder end (mm)");
+    def->tooltip = L("Most-down Z-offset (nozzle deepest). Default +0.10mm.");
+    def->cli_params = "mm";
+    def->set_default_value(new ConfigOptionFloat(0.10));
+
+    def = this->add("zladder_band_height", coFloat);
+    def->label = L("Z-ladder band height (mm)");
+    def->tooltip = L("Y-extent of each band in z-ladder-banded mode. Default 15mm.");
+    def->cli_params = "mm";
+    def->set_default_value(new ConfigOptionFloat(15.0));
+
+    def = this->add("zladder_height", coFloat);
+    def->label = L("Z-ladder ramp height (mm)");
+    def->tooltip = L("Total Y-extent of the ramp pad in z-ladder-ramp mode. Default 75mm.");
+    def->cli_params = "mm";
+    def->set_default_value(new ConfigOptionFloat(75.0));
+
+    def = this->add("zladder_width", coFloat);
+    def->label = L("Z-ladder pad width (mm)");
+    def->tooltip = L("X-width of the z-ladder pad (both banded and ramp). Default 60mm.");
+    def->cli_params = "mm";
+    def->set_default_value(new ConfigOptionFloat(60.0));
+
+    def = this->add("zladder_fiducials", coBool);
+    def->label = L("Z-ladder fiducials");
+    def->tooltip = L("Add 4 corner fiducial marks for AI-vision auto-alignment. Default ON.");
+    def->set_default_value(new ConfigOptionBool(true));
+
+    def = this->add("zladder_scale_bar", coBool);
+    def->label = L("Z-ladder scale bar");
+    def->tooltip = L("Add a 10mm scale bar with 11 ticks for DPI verification. Default ON.");
+    def->set_default_value(new ConfigOptionBool(true));
+
     //ORCA: sub-flags for --calibrate-type temp-tower / vol-speed-tower / pa-tower.
     def = this->add("temp_tower_start", coFloat);
     def->label = L("Temp tower start (°C)");

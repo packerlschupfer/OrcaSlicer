@@ -570,6 +570,15 @@ private:
     unsigned int                        m_layer_count;
     // Progress bar indicator. Increments from -1 up to layer_count.
     int                                 m_layer_index;
+    //ORCA: Z-ladder state — per-fill-line Z modulation within layer 1 of the z-ladder pad.
+    int                                 m_ladder_current_band     = -1;
+    double                              m_ladder_current_z        = 0.0;
+    double                              m_ladder_cumulative_z     = 0.0;
+    //ORCA: Z-ladder modulation helper. Returns the SET_GCODE_OFFSET Z_ADJUST gcode (or empty)
+    //      based on the path's first-point Y. Called from extrude_path() AND extrude_multi_path()
+    //      before each _extrude() call so all fill-emission code paths inject the per-Y-row
+    //      Z adjustment. No-op when calib_mode is not a z-ladder variant.
+    std::string _ladder_modulation_for_path(const class ExtrusionPath& path);
     // Current layer processed. In sequential printing mode, only a single copy will be printed.
     // In non-sequential mode, all its copies will be printed.
     const Layer*                        m_layer;

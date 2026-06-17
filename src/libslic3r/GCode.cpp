@@ -4668,6 +4668,22 @@ LayerResult GCode::process_layer(
             }
             break;
         }
+        //ORCA: Z-ladder — restore cumulative Z_ADJUST at the END of layer 1 so the printer's
+        //      effective Z is back to baseline. The per-fill-line hook in extrude_path() does
+        //      the modulation during layer 1; this just emits the final restore.
+        case CalibMode::Calib_ZLadder_Banded:
+        case CalibMode::Calib_ZLadder_Ramp: {
+            if (m_layer_index == 1 && std::abs(m_ladder_cumulative_z) > 1e-6) {
+                char buf[120];
+                snprintf(buf, sizeof(buf),
+                         "; --- z-ladder: restore Live-Z (cumulative %+.5f) ---\n"
+                         "SET_GCODE_OFFSET Z_ADJUST=%+.5f\n",
+                         m_ladder_cumulative_z, -m_ladder_cumulative_z);
+                gcode += buf;
+                m_ladder_cumulative_z = 0.0;
+            }
+            break;
+        }
     }
 
     //BBS
@@ -6065,6 +6081,8 @@ std::string GCode::extrude_multi_path(const ExtrusionMultiPath& multipath, const
     // Orca: end of multipath average mm3_per_mm value calculation
 
     for (const ExtrusionPath &path : multipath.paths){
+        //ORCA: z-ladder hook — modulate Live-Z per fill line. No-op for non-ladder calib modes.
+        gcode += this->_ladder_modulation_for_path(path);
         gcode += this->_extrude(path, description, speed);
         // Orca: Adaptive PA - dont adapt PA after the first pultipath extrusion is completed
         // as we have already set the PA value to the average flow over the totality of the path
@@ -6107,13 +6125,71 @@ std::string GCode::extrude_entity(const ExtrusionEntity&      entity,
     return "";
 }
 
+//ORCA: Z-ladder pre-extrusion modulation helper. Returns the SET_GCODE_OFFSET Z_ADJUST line(s) to
+//      inject before the path's _extrude call, or empty string if not applicable. Called from
+//      BOTH extrude_path() (single-path entities) AND extrude_multi_path()'s inner loop (so the
+//      hook fires regardless of which dispatcher Orca uses for the fill — rectilinear bottom
+//      surface is typically emitted via extrude_multi_path).
+std::string GCode::_ladder_modulation_for_path(const ExtrusionPath& path)
+{
+    if (m_curr_print == nullptr) return std::string();
+    const CalibMode m = m_curr_print->calib_mode();
+    const auto &cp = m_curr_print->calib_params();
+    if (m != CalibMode::Calib_ZLadder_Banded && m != CalibMode::Calib_ZLadder_Ramp)
+        return std::string();
+    const auto role = path.role();
+    const bool is_fill = (role == erBottomSurface || role == erTopSolidInfill
+                          || role == erInternalInfill || role == erSolidInfill);
+    if (!is_fill || path.polyline.empty()) return std::string();
+
+    const double y_mm = unscale_(path.polyline.first_point().y());
+    if (y_mm < cp.ladder_pad_y_lo || y_mm > cp.ladder_pad_y_hi) return std::string();
+
+    if (m == CalibMode::Calib_ZLadder_Banded) {
+        if (cp.ladder_band_height_mm <= 0.0) return std::string();
+        const double rel  = y_mm - cp.ladder_pad_y_lo;
+        int band = std::min(cp.ladder_steps - 1, static_cast<int>(std::floor(rel / cp.ladder_band_height_mm)));
+        if (band < 0) band = 0;
+        if (band == m_ladder_current_band) return std::string();
+        const double prev_z = (m_ladder_current_band >= 0)
+                              ? cp.start + m_ladder_current_band * cp.step : 0.0;
+        const double next_z = cp.start + band * cp.step;
+        const double delta  = next_z - prev_z;
+        m_ladder_cumulative_z += delta;
+        m_ladder_current_band  = band;
+        char buf[160];
+        snprintf(buf, sizeof(buf),
+                 "; --- z-ladder: entering band %d (Z=%+.3f, delta=%+.3f) ---\n"
+                 "SET_GCODE_OFFSET Z_ADJUST=%+.5f\n",
+                 band, next_z, delta, delta);
+        return buf;
+    }
+    // Calib_ZLadder_Ramp
+    const double span = cp.ladder_pad_y_hi - cp.ladder_pad_y_lo;
+    const double next_z = (span > 0.0)
+        ? cp.start + (y_mm - cp.ladder_pad_y_lo) / span * (cp.end - cp.start)
+        : cp.start;
+    const double delta = next_z - m_ladder_current_z;
+    if (std::abs(delta) <= 1e-5) return std::string();
+    m_ladder_cumulative_z += delta;
+    m_ladder_current_z = next_z;
+    char buf[120];
+    snprintf(buf, sizeof(buf),
+             "SET_GCODE_OFFSET Z_ADJUST=%+.5f ; z-ladder ramp Z=%+.4f\n",
+             delta, next_z);
+    return buf;
+}
+
 std::string GCode::extrude_path(const ExtrusionPath& path, const std::string& description, double speed)
 {
     // Orca: Reset average multipath flow as this is a single line, single extrude volumetric speed path
     m_multi_flow_segment_path_pa_set = false;
     m_multi_flow_segment_path_average_mm3_per_mm = 0;
     //    description += ExtrusionEntity::role_to_string(path.role());
-    std::string gcode = this->_extrude(path, description, speed);
+
+    //ORCA: Z-ladder pre-extrusion hook (also called inside extrude_multi_path for the
+    //      multi-path fill case).
+    std::string gcode = this->_ladder_modulation_for_path(path) + this->_extrude(path, description, speed);
     if (m_wipe.enable && FILAMENT_CONFIG(wipe)) {
         m_wipe.path = path.polyline.to_polyline();
         if (is_tree(this->config().support_type) && (path.role() == erSupportMaterial || path.role() == erSupportMaterialInterface || path.role() == erSupportTransition)) {

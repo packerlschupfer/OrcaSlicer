@@ -34,6 +34,8 @@ enum class CLICalibType {
     PATower,
     RetractionTower,
     VFATower,
+    ZLadderBanded,
+    ZLadderRamp,
 };
 
 // Maps a CLI string ("flow-yolo-recommended", etc.) to the enum + a 3MF resource path.
@@ -177,7 +179,46 @@ bool cli_emit_calib_outputs(const std::string &gcode_path,
                             const CLIZCalParams *zcal_params,         // non-null only for ZOffsetPattern
                             const CLITowerParams *tower_params,       // non-null only for tower types
                             const CLIFlowRateParams *flow_params,     // non-null only for flow types
+                            const struct CLIZLadderParams *zladder_params, // non-null only for ZLadder types
                             const Model *model);                       // for flow per-block listing
+
+// ============================================================
+// Z-ladder (single-pad Z-offset sweep, banded or ramp).
+// ============================================================
+//
+// A single solid 1-layer rectangular pad with rectilinear fill (lines along X). The Print
+// engine emits fill lines in monotonic Y order — so as the printhead steps from one Y row
+// to the next, the post-process injector knows exactly where in the pad we are and emits
+// `SET_GCODE_OFFSET Z_ADJUST=<delta>` at Y-row boundaries.
+//
+//   Banded: 5-9 discrete Z bands across Y. Each band 10-15mm tall. Clean step transitions.
+//           For first-time calibration; AI vision attributes by Y position.
+//   Ramp:   Continuous Z gradient over the whole pad. Z updated per fill line.
+//           For pinpoint refinement after a banded pass got you close.
+//
+// Both variants share: pad geometry, fiducials (with notch IDs), scale bar. PRINT_START
+// contract preserved verbatim. End-of-pad emits a Z_ADJUST that sums the cumulative
+// adjustments back to zero (so the printer's effective Live-Z is restored).
+
+struct CLIZLadderParams {
+    int    steps = 5;              // banded only: number of bands (odd recommended so 0 = one band)
+    double start_mm = -0.10;       // most-up Z offset (nozzle highest)
+    double end_mm   = +0.10;       // most-down Z offset (nozzle deepest)
+    double band_height_mm = 15.0;  // banded only: each band's Y extent
+    double width_mm = 60.0;        // pad X-width
+    double height_mm = 75.0;       // ramp only: total Y-extent of the ramp pad
+    bool   fiducials = true;
+    bool   scale_bar = true;
+};
+
+void cli_build_zladder(Model &model, DynamicPrintConfig &full_config,
+                       CLICalibType type, const CLIZLadderParams &params);
+
+// Translate z-ladder CLI params → Calib_Params for Print::set_calib_params(). The Print
+// engine's per-extrusion hook in GCode::extrude_path() reads these fields and emits
+// SET_GCODE_OFFSET Z_ADJUST per fill line. Returns true on success.
+bool cli_zladder_get_calib_params(CLICalibType type, const CLIZLadderParams &params,
+                                  const DynamicPrintConfig &full_config, Calib_Params &out);
 
 }
 

@@ -26,7 +26,10 @@ enum class CalibMode : int {
     Calib_Retraction_tower,
     Calib_Input_shaping_freq,
     Calib_Input_shaping_damp,
-    Calib_Cornering
+    Calib_Cornering,
+    //ORCA: Z-ladder — single-pad Z-offset sweep. Per-Y-row modulation within layer 1.
+    Calib_ZLadder_Banded,
+    Calib_ZLadder_Ramp,
 };
 
 enum class CalibState { Start = 0, Preset, Calibration, CoarseSave, FineCalibration, Save, Finish };
@@ -42,6 +45,15 @@ struct Calib_Params
     std::string shaper_type;
     std::vector<double> accelerations;
     std::vector<double> speeds;
+
+    //ORCA: z-ladder-specific (used when mode = Calib_ZLadder_Banded / Calib_ZLadder_Ramp).
+    //      start/end = Z-offset range; step = per-band Z step (banded only).
+    //      ladder_band_height_mm = Y-extent per band (banded only).
+    //      ladder_pad_y_lo/hi = Y bounds of the pad in BED coords (matches G1 Y values).
+    int    ladder_steps             = 0;
+    double ladder_band_height_mm    = 0.0;
+    double ladder_pad_y_lo          = 0.0;
+    double ladder_pad_y_hi          = 0.0;
 
     CalibMode mode;
 };
