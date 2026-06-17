@@ -10990,6 +10990,25 @@ CLIMiscConfigDef::CLIMiscConfigDef()
     def->cli_params = "mm";
     def->set_default_value(new ConfigOptionFloat(5.0));
 
+    def = this->add("zcal_struts", coBool);
+    def->label = L("Z-cal struts");
+    def->tooltip = L("Add thin single-layer struts wiring every island (fiducials, S/G/W zones, "
+                     "C-loops) to the frame so the print peels off as one mesh. Requires --zcal-frame. "
+                     "Default ON.");
+    def->set_default_value(new ConfigOptionBool(true));
+
+    def = this->add("zcal_fiducial_ids", coBool);
+    def->label = L("Z-cal fiducial IDs");
+    def->tooltip = L("Notch each fiducial in a unique corner (NW/NE/SE/SW) so AI-vision can identify "
+                     "any fiducial fragment even after a partial peel scattered it. Default ON.");
+    def->set_default_value(new ConfigOptionBool(true));
+
+    def = this->add("zcal_zone_ids", coBool);
+    def->label = L("Z-cal zone IDs");
+    def->tooltip = L("Place 1/2/3 small dots beside zones S/G/W so AI-vision can attribute any zone "
+                     "fragment back to its source. Default ON.");
+    def->set_default_value(new ConfigOptionBool(true));
+
     //ORCA: sub-flags for --calibrate-type temp-tower / vol-speed-tower / pa-tower.
     def = this->add("temp_tower_start", coFloat);
     def->label = L("Temp tower start (°C)");

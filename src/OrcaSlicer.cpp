@@ -1537,6 +1537,12 @@ int CLI::run(int argc, char **argv)
                 cli_zcal_params.frame_width = fw->value;
             if (ConfigOptionFloat *fm = m_config.option<ConfigOptionFloat>("zcal_frame_margin"); fm)
                 cli_zcal_params.frame_margin = fm->value;
+            if (ConfigOptionBool *b = m_config.option<ConfigOptionBool>("zcal_struts"); b)
+                cli_zcal_params.struts = b->value;
+            if (ConfigOptionBool *b = m_config.option<ConfigOptionBool>("zcal_fiducial_ids"); b)
+                cli_zcal_params.fiducial_ids = b->value;
+            if (ConfigOptionBool *b = m_config.option<ConfigOptionBool>("zcal_zone_ids"); b)
+                cli_zcal_params.zone_ids = b->value;
         } else if (cli_calib_type == Slic3r::CLICalibType::TempTower) {
             if (ConfigOptionFloat *s = m_config.option<ConfigOptionFloat>("temp_tower_start"); s)
                 cli_tower_params.start = s->value;
@@ -6517,9 +6523,18 @@ int CLI::run(int argc, char **argv)
                                 if (printer_technology == ptFFF) {
                                     std::string conflict_result = print_fff->get_conflict_string();
                                     if (!conflict_result.empty()) {
-                                       BOOST_LOG_TRIVIAL(error) << "plate "<< index+1<< ": found slicing result conflict!"<< std::endl;
-                                       record_exit_reson(outfile_dir, CLI_GCODE_PATH_CONFLICTS, index+1, cli_errors[CLI_GCODE_PATH_CONFLICTS], sliced_info);
-                                       flush_and_exit(CLI_GCODE_PATH_CONFLICTS);
+                                       //ORCA: --calibrate-type plates intentionally place primitives in
+                                       //      overlapping perimeter zones (struts touching frame / island
+                                       //      perimeters) so the print peels off the bed as one connected
+                                       //      mesh. Demote the conflict to a warning for calibration runs
+                                       //      so the slice succeeds.
+                                       if (cli_calib_type != Slic3r::CLICalibType::NoCalib) {
+                                           BOOST_LOG_TRIVIAL(warning) << "plate "<< index+1<< ": ignoring gcode-path conflict — --calibrate-type plates expect overlapping struts: " << conflict_result << std::endl;
+                                       } else {
+                                           BOOST_LOG_TRIVIAL(error) << "plate "<< index+1<< ": found slicing result conflict!"<< std::endl;
+                                           record_exit_reson(outfile_dir, CLI_GCODE_PATH_CONFLICTS, index+1, cli_errors[CLI_GCODE_PATH_CONFLICTS], sliced_info);
+                                           flush_and_exit(CLI_GCODE_PATH_CONFLICTS);
+                                       }
                                     }
 
                                     //check the warnings
