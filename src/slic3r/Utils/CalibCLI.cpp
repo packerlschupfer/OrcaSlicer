@@ -1562,6 +1562,8 @@ bool cli_emit_calib_outputs(const std::string &gcode_path,
         // JSON
         J.w(JsonOut::str("plate_size_mm") + ": " + JsonOut::num(p.plate_size) + ",\n");
         J.w(JsonOut::str("zone_size_mm") + ": " + JsonOut::num(p.zone_size) + ",\n");
+        if (p.grid)
+            J.w(JsonOut::str("grid_pitch_mm") + ": " + JsonOut::num(p.grid_pitch_mm) + ",\n");
         J.w(JsonOut::str("zones") + ": [\n"); J.indent = 2;
         auto zone = [&](const std::string &name, double mx, double my, double sz, const std::string &extra) {
             J.w("{" + JsonOut::str("name") + ": " + JsonOut::str(name)
