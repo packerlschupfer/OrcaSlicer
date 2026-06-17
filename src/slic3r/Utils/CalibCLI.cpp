@@ -611,25 +611,68 @@ void cli_build_zcal_pattern(Model &model, DynamicPrintConfig &full_config, const
         }
     }
 
-    // ---- Scale bar (1 baseline + 11 ticks at 1mm intervals) ----
+    // ---- Scale bar comb (1 polygon mesh: baseline + 11 ticks + strut to frame) ----
+    //      Single custom-vertex polygon containing the 0-10mm scale bar, all 11 tick marks
+    //      (1mm pitch), and one strut connecting the comb to the bottom frame edge (with
+    //      0.5mm overlap into the frame). The baseline is 11mm wide (slightly wider than
+    //      the 10mm scale span) to comfortably enclose the end ticks.
     if (params.scale_bar) {
-        // Baseline: 10mm long, 0.5mm wide, at y=scale_bar_y.
-        ModelObject* baseline = add_box_object(model, "scale_baseline",
-                                                scale_bar_x0 + scale_bar_len / 2.0, scale_bar_y,
-                                                scale_bar_len, 0.5, ZCAL_LAYER_THICKNESS);
-        set_solid_pad_config(baseline);
+        const double SB_x_lo  = -5.5;   // baseline west edge (local x)
+        const double SB_x_hi  = +5.5;   // baseline east edge
+        const double SB_y_top = +0.5;   // baseline top (the "back" of the comb)
+        const double SB_y_bot = 0.0;    // baseline bottom (where ticks emerge)
+        const double tick_w   = 0.45;
+        const double tw       = tick_w / 2.0;
+        // Strut sits BETWEEN ticks 5 and 6 (avoiding any tick X range).
+        // Tick i is at x = -5 + i, width 0.45 → ticks 5 and 6 span [-0.225,+0.225] and [+0.775,+1.225].
+        // Strut occupies x = [+0.275, +0.725] which is fully between the two.
+        const double strut_x_lo = +0.275;
+        const double strut_x_hi = +0.725;
+        // Strut tip lands 0.5mm INSIDE the frame's bottom inner edge (in plate coords:
+        // -(fid_off+2.5+frame_margin)-0.5). In scale-bar-local coords, subtract scale_bar_y.
+        const double frame_inner_edge = fid_off + 2.5 + params.frame_margin;
+        const double strut_tip_local  = (-frame_inner_edge - 0.5) - scale_bar_y;
 
-        // 11 ticks: short verticals at x = scale_bar_x0 + 0, 1, 2, ..., 10mm.
-        for (int i = 0; i <= 10; ++i) {
-            const double tx = scale_bar_x0 + static_cast<double>(i);
-            const double tick_h = (i == 0 || i == 10) ? 3.0
-                                : (i == 5) ? 2.5 : 1.5;  // longer ticks at ends + midpoint for AI orientation
-            ModelObject* tick = add_box_object(model,
-                                               (boost::format("scale_tick_%1%mm") % i).str(),
-                                               tx, scale_bar_y - 0.5 - tick_h / 2.0,
-                                               0.45, tick_h, ZCAL_LAYER_THICKNESS);
-            set_solid_pad_config(tick);
+        auto tick_x_local = [](int i) { return static_cast<double>(-5 + i); };
+        auto tick_height  = [](int i) {
+            // Longer end + midpoint ticks for visual AI orientation (recognizable in the scan).
+            if (i == 0 || i == 10) return 3.0;
+            if (i == 5)            return 2.5;
+            return 1.5;
+        };
+
+        std::vector<Vec2d> poly;
+        poly.reserve(60);
+        // CCW from NW corner of baseline.
+        poly.push_back({SB_x_lo, SB_y_top});                  // NW
+        poly.push_back({SB_x_hi, SB_y_top});                  // NE
+        poly.push_back({SB_x_hi, SB_y_bot});                  // SE
+        // Walk WEST along baseline bottom, detouring into ticks 10..6.
+        for (int i = 10; i >= 6; --i) {
+            poly.push_back({tick_x_local(i) + tw, SB_y_bot});
+            poly.push_back({tick_x_local(i) + tw, -tick_height(i)});
+            poly.push_back({tick_x_local(i) - tw, -tick_height(i)});
+            poly.push_back({tick_x_local(i) - tw, SB_y_bot});
         }
+        // Strut detour between ticks 6 (left edge at +0.775) and 5 (right edge at +0.225).
+        poly.push_back({strut_x_hi, SB_y_bot});
+        poly.push_back({strut_x_hi, strut_tip_local});
+        poly.push_back({strut_x_lo, strut_tip_local});
+        poly.push_back({strut_x_lo, SB_y_bot});
+        // Continue WEST through ticks 5..0.
+        for (int i = 5; i >= 0; --i) {
+            poly.push_back({tick_x_local(i) + tw, SB_y_bot});
+            poly.push_back({tick_x_local(i) + tw, -tick_height(i)});
+            poly.push_back({tick_x_local(i) - tw, -tick_height(i)});
+            poly.push_back({tick_x_local(i) - tw, SB_y_bot});
+        }
+        poly.push_back({SB_x_lo, SB_y_bot});                  // SW
+        // Polygon closes implicitly back to NW.
+
+        ModelObject* mo = add_polygon_object(model, "scale_bar_comb",
+                                              /*xc=*/0.0, /*yc=*/scale_bar_y,
+                                              poly, ZCAL_LAYER_THICKNESS);
+        set_solid_pad_config(mo);
     }
 
     // ---- Zone S (solid concentric pad + optional strut tail merged into mesh) ----
@@ -1492,7 +1535,10 @@ bool cli_emit_calib_outputs(const std::string &gcode_path,
             strut(-corner_off, +C_outer, -corner_off, +tail_tip, "C_TL_strut"); J.body += ",";
             strut(+corner_off, +C_outer, +corner_off, +tail_tip, "C_TR_strut"); J.body += ",";
             strut(+corner_off, -C_outer, +corner_off, -tail_tip, "C_BR_strut"); J.body += ",";
-            strut(-corner_off, -C_outer, -corner_off, -tail_tip, "C_BL_strut");
+            strut(-corner_off, -C_outer, -corner_off, -tail_tip, "C_BL_strut"); J.body += ",";
+            // 1 scale_bar comb strut (merged into the comb polygon; X offset +0.5mm between
+            // ticks 5 and 6; from scale bar baseline bottom DOWN to frame bottom inner edge + 0.5mm).
+            strut(+0.5, scale_bar_y, +0.5, -tail_tip, "scale_bar_strut");
             J.body += "]";
         }
         if (p.frame && p.frame_layers > 0 && p.frame_width > 0.0) {
