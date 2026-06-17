@@ -100,6 +100,13 @@ struct CLIZCalParams {
     int    frame_layers = 2;       // 2 × 0.20mm = 0.40mm — peelable but trivial to remove by hand
     double frame_width = 3.0;      // mm
     double frame_margin = 5.0;     // mm gap from fiducial outer bbox to frame inner edge
+    // ORCA: connective struts + fragment IDs (from the struts brief, 2026-06-17). The frame alone
+    //       peels intact but the islands inside it (fiducials, C-loops, S/G/W zones) stay loose
+    //       and fragment on peel. Struts wire everything to the frame. Notches + dots let the AI
+    //       attribute any fragment back to its source even if a strut breaks.
+    bool   struts = true;          // 11 thin first-layer struts: 4 frame→fiducial + 3 frame→zone + 4 frame→C
+    bool   fiducial_ids = true;    // each fiducial becomes an L-shape with notch in a unique corner
+    bool   zone_ids = true;        // 1/2/3 small dots beside S/G/W identifying which zone
 };
 
 void cli_build_zcal_pattern(Model &model, DynamicPrintConfig &full_config, const CLIZCalParams &params);
