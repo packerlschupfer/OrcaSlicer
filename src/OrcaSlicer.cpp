@@ -1543,6 +1543,12 @@ int CLI::run(int argc, char **argv)
                 cli_zcal_params.fiducial_ids = b->value;
             if (ConfigOptionBool *b = m_config.option<ConfigOptionBool>("zcal_zone_ids"); b)
                 cli_zcal_params.zone_ids = b->value;
+            if (ConfigOptionBool *b = m_config.option<ConfigOptionBool>("zcal_grid"); b)
+                cli_zcal_params.grid = b->value;
+            if (ConfigOptionFloat *gp = m_config.option<ConfigOptionFloat>("zcal_grid_pitch"); gp)
+                cli_zcal_params.grid_pitch_mm = gp->value;
+            if (ConfigOptionBool *b = m_config.option<ConfigOptionBool>("zcal_grid_over_zones"); b)
+                cli_zcal_params.grid_over_zones = b->value;
         } else if (cli_calib_type == Slic3r::CLICalibType::TempTower) {
             if (ConfigOptionFloat *s = m_config.option<ConfigOptionFloat>("temp_tower_start"); s)
                 cli_tower_params.start = s->value;
