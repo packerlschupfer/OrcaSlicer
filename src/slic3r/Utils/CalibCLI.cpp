@@ -14,6 +14,8 @@
 
 #include "libslic3r/CutUtils.hpp"
 #include "libslic3r/Flow.hpp"
+#include "libslic3r/Polygon.hpp"
+#include "libslic3r/Triangulation.hpp"
 #include "libslic3r/TriangleMesh.hpp"
 #include "libslic3r/Utils.hpp"
 
@@ -338,6 +340,56 @@ constexpr double ZCAL_LAYER_THICKNESS = 0.20;
 // Line widths chosen so single-perimeter walls render as one extrusion at 0.4mm nozzle.
 constexpr double ZCAL_THIN_WALL_WIDTH = 0.45;
 
+// Extrude a 2D polygon (in mm, defined CCW) into a flat 3D prism (z=0 to z=thickness).
+// Uses libslic3r's Triangulation helper for the top/bottom faces and builds side walls per edge.
+// Returns a TriangleMesh suitable for ModelObject::add_volume.
+TriangleMesh make_extruded_polygon(const std::vector<Vec2d> &poly_mm, double thickness)
+{
+    indexed_triangle_set its;
+    const int N = static_cast<int>(poly_mm.size());
+    its.vertices.reserve(2 * N);
+    // Bottom face vertices (z=0)
+    for (const Vec2d &p : poly_mm)
+        its.vertices.emplace_back(static_cast<float>(p.x()), static_cast<float>(p.y()), 0.0f);
+    // Top face vertices (z=thickness)
+    for (const Vec2d &p : poly_mm)
+        its.vertices.emplace_back(static_cast<float>(p.x()), static_cast<float>(p.y()), static_cast<float>(thickness));
+
+    // Triangulate the polygon (returns triangles over polygon point indices).
+    Polygon pg = Polygon::new_scale(poly_mm);
+    const Triangulation::Indices top_tris = Triangulation::triangulate(pg);
+
+    its.indices.reserve(top_tris.size() * 2 + N * 2);
+    // Top face — CCW from above so normals point +Z.
+    for (const Vec3i32 &tri : top_tris)
+        its.indices.emplace_back(N + tri.x(), N + tri.y(), N + tri.z());
+    // Bottom face — winding flipped so normals point -Z.
+    for (const Vec3i32 &tri : top_tris)
+        its.indices.emplace_back(tri.x(), tri.z(), tri.y());
+    // Side walls — one quad (= 2 triangles) per polygon edge, normals outward.
+    for (int i = 0; i < N; ++i) {
+        const int j = (i + 1) % N;
+        its.indices.emplace_back(i, j, N + j);
+        its.indices.emplace_back(i, N + j, N + i);
+    }
+    return TriangleMesh(std::move(its));
+}
+
+// Same idea as add_box_object but takes a pre-computed polygon (already centered around origin).
+// The polygon coords are local (around 0,0); (xc,yc) is the instance offset on the plate.
+ModelObject* add_polygon_object(Model& model, const std::string& name,
+                                double xc, double yc,
+                                const std::vector<Vec2d> &poly_mm, double thickness)
+{
+    TriangleMesh mesh = make_extruded_polygon(poly_mm, thickness);
+    ModelObject* mo = model.add_object();
+    mo->name = name;
+    mo->add_volume(std::move(mesh), ModelVolumeType::MODEL_PART, /*modify_to_center_geometry=*/false);
+    ModelInstance* inst = mo->add_instance();
+    inst->set_offset(Vec3d(xc, yc, 0.0));
+    return mo;
+}
+
 // Centered axis-aligned box ModelObject. The mesh is built at the origin (size centered in
 // XY, sitting on Z=0 with its top at thickness) and the instance offset positions it on the
 // plate. All Z-cal primitives use this builder.
@@ -430,22 +482,131 @@ void cli_build_zcal_pattern(Model &model, DynamicPrintConfig &full_config, const
     const double scale_bar_len = 10.0;            // 10mm scale
     const double scale_bar_x0  = -scale_bar_len / 2.0;
 
-    // ---- Fiducials (4× filled square at known XY) ----
-    //      Single mesh per fiducial to avoid gcode-path conflicts from overlapping ModelObjects
-    //      (cross shape needed two perpendicular bars overlapping at the center). A 5×5 solid
-    //      square is just as detectable by AI-vision corner-finders as a "+" — the alignment
-    //      pipeline locates the centroid of each filled blob.
+    // ---- Fiducials (4× solid pad + optional strut tail, single mesh per fiducial) ----
+    //      Each fiducial is a 5×5 mm filled pad. When --zcal-fiducial-ids is on, the pad
+    //      becomes an L-shape with a 1.5×1.5 mm notch in a unique corner per fiducial
+    //      (NW/NE/SE/SW). When --zcal-struts is on, a thin tail extends from the pad's outer
+    //      edge toward the frame, stopping 0.6 mm short of the frame inner edge (the gcode-path
+    //      conflict detector counts shared perimeters between different ModelObjects as
+    //      conflicts; the gap clears that). The L-shape + tail is encoded as a SINGLE
+    //      custom-vertex polygon mesh — no inter-object conflict between pad and strut.
     if (params.fiducials) {
-        struct { double x, y; const char* name; } fids[4] = {
-            { -fid_off, -fid_off, "fid_BL" },
-            { +fid_off, -fid_off, "fid_BR" },
-            { +fid_off, +fid_off, "fid_TR" },
-            { -fid_off, +fid_off, "fid_TL" },
+        const double L = -2.5, R = +2.5, B = -2.5, T = +2.5;             // fiducial local extents
+        const double notch = 1.5;                                         // ID-notch size
+        const double sw    = ZCAL_THIN_WALL_WIDTH;                        // strut width 0.45 mm
+        // ORCA v6.3: with conflict-check suppression for calibrate-type slices, struts can OVERLAP
+        //           into the frame footprint. Slicer unions the overlapping perimeters at slice time
+        //           so the print bonds physically. 0.5mm overlap into frame gives reliable bond.
+        const double overlap = 0.5;
+        const double tail_len = params.frame_margin + overlap;
+        const bool   add_notch = params.fiducial_ids;
+        const bool   add_tail  = params.struts && params.frame;
+
+        // Per-fiducial polygon definitions. Tail emerges from the side OPPOSITE the notch on the
+        // outer edge (so the tail base never crosses the notched corner geometry).
+        struct FidDef { double x, y; const char* name; };
+        FidDef fids[4] = {
+            { -fid_off, +fid_off, "fid_TL" },   // notch NW, tail UP from east half of top edge
+            { +fid_off, +fid_off, "fid_TR" },   // notch NE, tail UP from west half of top edge
+            { +fid_off, -fid_off, "fid_BR" },   // notch SE, tail DOWN from west half of bottom edge
+            { -fid_off, -fid_off, "fid_BL" },   // notch SW, tail DOWN from east half of bottom edge
         };
-        const double fid_size = 5.0;
-        for (auto &f : fids) {
-            ModelObject* mo = add_box_object(model, f.name,
-                                             f.x, f.y, fid_size, fid_size, ZCAL_LAYER_THICKNESS);
+
+        for (int idx = 0; idx < 4; ++idx) {
+            const auto &f = fids[idx];
+            std::vector<Vec2d> p;
+            // Per-fiducial CCW polygon. Tail centered at the midpoint of the non-notched half
+            // of the outer edge; tail tip at fiducial-local y = ±(T + tail_len).
+            switch (idx) {
+            case 0: { // TL (notch NW, tail UP from east half of top edge)
+                const double tx = (-1.0 + R) / 2.0;                 // east-half center → +0.75
+                const double tail_y = T + tail_len;
+                p = {
+                    {L, B}, {R, B}, {R, T},
+                };
+                if (add_tail) {
+                    p.push_back({tx + sw/2, T});
+                    p.push_back({tx + sw/2, tail_y});
+                    p.push_back({tx - sw/2, tail_y});
+                    p.push_back({tx - sw/2, T});
+                }
+                if (add_notch) {
+                    p.push_back({L + notch, T});
+                    p.push_back({L + notch, T - notch});
+                    p.push_back({L,         T - notch});
+                } else {
+                    p.push_back({L, T});
+                }
+                break;
+            }
+            case 1: { // TR (notch NE, tail UP from west half of top edge)
+                const double tx = (L + 1.0) / 2.0;                  // west-half center → -0.75
+                const double tail_y = T + tail_len;
+                p = { {L, B}, {R, B} };
+                if (add_notch) {
+                    p.push_back({R,         T - notch});
+                    p.push_back({R - notch, T - notch});
+                    p.push_back({R - notch, T});
+                } else {
+                    p.push_back({R, T});
+                }
+                if (add_tail) {
+                    p.push_back({tx + sw/2, T});
+                    p.push_back({tx + sw/2, tail_y});
+                    p.push_back({tx - sw/2, tail_y});
+                    p.push_back({tx - sw/2, T});
+                }
+                p.push_back({L, T});
+                break;
+            }
+            case 2: { // BR (notch SE, tail DOWN from west half of bottom edge)
+                const double tx = (L + 1.0) / 2.0;                  // west-half center → -0.75
+                const double tail_y = B - tail_len;
+                p = { {L, T}, {R, T} };
+                if (add_notch) {
+                    p.push_back({R,         B + notch});
+                    p.push_back({R - notch, B + notch});
+                    p.push_back({R - notch, B});
+                } else {
+                    p.push_back({R, B});
+                }
+                if (add_tail) {
+                    // Going from the SE area west across the bottom edge — tail descends.
+                    // CCW means interior on LEFT while walking; from R,B going west, interior is north.
+                    p.push_back({tx + sw/2, B});
+                    p.push_back({tx + sw/2, tail_y});
+                    p.push_back({tx - sw/2, tail_y});
+                    p.push_back({tx - sw/2, B});
+                }
+                p.push_back({L, B});
+                // We're walking from (R,T) west, then down east edge to (R,B), then west across bottom to (L,B).
+                // That's actually CW, not CCW. Reverse the polygon to CCW.
+                std::reverse(p.begin(), p.end());
+                break;
+            }
+            case 3: { // BL (notch SW, tail DOWN from east half of bottom edge)
+                const double tx = (-1.0 + R) / 2.0;                 // east-half center → +0.75
+                const double tail_y = B - tail_len;
+                p = { {L, T}, {R, T}, {R, B} };
+                if (add_tail) {
+                    p.push_back({tx + sw/2, B});
+                    p.push_back({tx + sw/2, tail_y});
+                    p.push_back({tx - sw/2, tail_y});
+                    p.push_back({tx - sw/2, B});
+                }
+                if (add_notch) {
+                    p.push_back({L + notch, B});
+                    p.push_back({L + notch, B + notch});
+                    p.push_back({L,         B + notch});
+                } else {
+                    p.push_back({L, B});
+                }
+                // Walking from (L,T) east to (R,T), then south to (R,B), then west to (L,B). CW. Flip.
+                std::reverse(p.begin(), p.end());
+                break;
+            }
+            }
+            ModelObject* mo = add_polygon_object(model, f.name, f.x, f.y, p, ZCAL_LAYER_THICKNESS);
             set_solid_pad_config(mo);
         }
     }
@@ -471,11 +632,26 @@ void cli_build_zcal_pattern(Model &model, DynamicPrintConfig &full_config, const
         }
     }
 
-    // ---- Zone S (solid concentric pad) ----
+    // ---- Zone S (solid concentric pad + optional strut tail merged into mesh) ----
+    //      Same merge trick as fiducials — a single polygon mesh with a 0.45mm tail extending
+    //      from the zone's top edge into the frame footprint by 0.5mm (slicer unions perimeters
+    //      with the frame mesh at slice time, conflict suppressed for calibrate-type runs).
     {
-        ModelObject* mo = add_box_object(model, "zone_S_solid",
-                                         zone_S_xc, row_y,
-                                         zone, zone, ZCAL_LAYER_THICKNESS);
+        ModelObject* mo;
+        if (params.struts && params.frame) {
+            const double frame_inner = fid_off + 2.5 + params.frame_margin;
+            const double tip_y_local = (frame_inner + 0.5) - row_y;     // overlap 0.5mm into frame
+            const double sw = ZCAL_THIN_WALL_WIDTH;
+            std::vector<Vec2d> poly = {
+                {-zone/2, -zone/2}, {+zone/2, -zone/2}, {+zone/2, +zone/2},
+                {+sw/2,   +zone/2}, {+sw/2,   tip_y_local},
+                {-sw/2,   tip_y_local}, {-sw/2, +zone/2},
+                {-zone/2, +zone/2},
+            };
+            mo = add_polygon_object(model, "zone_S_solid", zone_S_xc, row_y, poly, ZCAL_LAYER_THICKNESS);
+        } else {
+            mo = add_box_object(model, "zone_S_solid", zone_S_xc, row_y, zone, zone, ZCAL_LAYER_THICKNESS);
+        }
         set_solid_pad_config(mo);
     }
 
@@ -567,6 +743,68 @@ void cli_build_zcal_pattern(Model &model, DynamicPrintConfig &full_config, const
             fb->config.set_key_value("bottom_shell_layers", new ConfigOptionInt(std::min(params.frame_layers, 2)));
             fb->config.set_key_value("sparse_infill_density", new ConfigOptionPercent(100));
             fb->config.set_key_value("top_surface_pattern", new ConfigOptionEnum<InfillPattern>(ipConcentric));
+        }
+    }
+
+    //ORCA: v6.3 — fid+strut and zone_S+strut are merged polygons (handled above). Zone G/W and
+    //      the 4 C-loops get STANDALONE struts whose endpoints OVERLAP the island top edge AND
+    //      the frame inner edge by 0.5mm. With CLI_GCODE_PATH_CONFLICTS suppressed for
+    //      calibrate-type runs (OrcaSlicer.cpp), the slicer unions overlapping perimeters at
+    //      slice time → physical bond. Result: every island peels with the frame as one piece.
+    if (params.struts && params.frame) {
+        const double fid_outer        = fid_off + 2.5;
+        const double frame_inner_edge = fid_outer + params.frame_margin;
+        const double strut_w          = ZCAL_THIN_WALL_WIDTH;
+        constexpr double STRUT_OVERLAP = 0.5; // mm extension into island and frame for perimeter union
+
+        auto add_overlap_strut = [&](const std::string &name, double xc, double y0, double y1) {
+            // Vertical axis-aligned strut centered at xc. y0 = base (at island side), y1 = tip (at frame side).
+            // Extends both endpoints outward by STRUT_OVERLAP for perimeter fusion.
+            const double yA = (y1 > y0 ? y0 - STRUT_OVERLAP : y0 + STRUT_OVERLAP);
+            const double yB = (y1 > y0 ? y1 + STRUT_OVERLAP : y1 - STRUT_OVERLAP);
+            const double h  = std::abs(yB - yA);
+            const double yc = (yA + yB) / 2.0;
+            ModelObject* mo = add_box_object(model, name, xc, yc, strut_w, h, ZCAL_LAYER_THICKNESS);
+            set_single_wall_config(mo);
+        };
+
+        // Zone G: strut at zone center X, from topmost wall pair's top edge to frame inner edge.
+        //   Top wall pair center y_local = +8.0, gap = 0.5mm → top wall yc = 8 + 0.475 = 8.475,
+        //   wall top edge y_local = 8.475 + 0.225 = 8.7. In plate coords: row_y + 8.7 = 16.7.
+        add_overlap_strut("strut_zone_G", zone_G_xc, row_y + 8.7, +frame_inner_edge);
+        // Zone W: strut at zone center X, from top wall's top edge to frame inner edge.
+        //   Top wall (i=2): yc = row_y + 6, top edge = row_y + 6 + 0.225 = row_y + 6.225.
+        add_overlap_strut("strut_zone_W", zone_W_xc, row_y + 6.225, +frame_inner_edge);
+        // 4 C-loop struts (vertical, from C-loop outer edge to nearest frame edge).
+        const double C_outer = corner_off + 3.0;
+        add_overlap_strut("strut_C_TL", -corner_off, +C_outer, +frame_inner_edge);
+        add_overlap_strut("strut_C_TR", +corner_off, +C_outer, +frame_inner_edge);
+        add_overlap_strut("strut_C_BR", +corner_off, -C_outer, -frame_inner_edge);
+        add_overlap_strut("strut_C_BL", -corner_off, -C_outer, -frame_inner_edge);
+    }
+
+    // ---- Zone ID dots (1/2/3 small dots beside zones S/G/W) ----
+    //      Each dot is a 1×1mm filled square placed just OUTSIDE the zone bbox at its NE corner.
+    //      Lets the AI attribute a fragment back to its zone if it scatters on peel.
+    if (params.zone_ids) {
+        const double dot_size = 1.0;
+        const double dot_gap  = 0.6; // 0.6mm between adjacent dots
+        struct { double zone_xc; int count; const char* name; } zones[3] = {
+            { zone_S_xc, 1, "zone_S_id" },
+            { zone_G_xc, 2, "zone_G_id" },
+            { zone_W_xc, 3, "zone_W_id" },
+        };
+        for (auto &z : zones) {
+            // NE corner of the zone, just outside.
+            const double base_x = z.zone_xc + zone / 2.0 + 1.5;  // 1.5mm gap from zone right edge
+            const double base_y = row_y + zone / 2.0 - dot_size / 2.0;  // at top edge of zone
+            for (int i = 0; i < z.count; ++i) {
+                const double yi = base_y - i * (dot_size + dot_gap);
+                ModelObject* mo = add_box_object(model,
+                                                  (boost::format("%1%_%2%") % z.name % i).str(),
+                                                  base_x, yi, dot_size, dot_size, ZCAL_LAYER_THICKNESS);
+                set_solid_pad_config(mo);
+            }
         }
     }
 
@@ -1178,20 +1416,29 @@ bool cli_emit_calib_outputs(const std::string &gcode_path,
                 + (extra.empty() ? std::string{} : (", " + extra))
                 + "}");
         };
-        zone("S", -zone_pitch, row_y, p.zone_size, JsonOut::str("kind") + ": " + JsonOut::str("solid_concentric"));
+        const std::string s_id_extra = p.zone_ids ? (", " + JsonOut::str("id_dots") + ": 1") : "";
+        const std::string g_id_extra = p.zone_ids ? (", " + JsonOut::str("id_dots") + ": 2") : "";
+        const std::string w_id_extra = p.zone_ids ? (", " + JsonOut::str("id_dots") + ": 3") : "";
+        zone("S", -zone_pitch, row_y, p.zone_size, JsonOut::str("kind") + ": " + JsonOut::str("solid_concentric") + s_id_extra);
         J.body += ",\n";
-        zone("G",  0.0,        row_y, p.zone_size, JsonOut::str("kind") + ": " + JsonOut::str("gap_pairs") + ", " + JsonOut::str("gaps_mm") + ": [0.5,0.6,0.8]");
+        zone("G",  0.0,        row_y, p.zone_size, JsonOut::str("kind") + ": " + JsonOut::str("gap_pairs") + ", " + JsonOut::str("gaps_mm") + ": [0.5,0.6,0.8]" + g_id_extra);
         J.body += ",\n";
-        zone("W", +zone_pitch, row_y, p.zone_size, JsonOut::str("kind") + ": " + JsonOut::str("single_walls") + ", " + JsonOut::str("count") + ": 3");
+        zone("W", +zone_pitch, row_y, p.zone_size, JsonOut::str("kind") + ": " + JsonOut::str("single_walls") + ", " + JsonOut::str("count") + ": 3" + w_id_extra);
         J.body += "\n"; J.indent = 1;
         J.w("],\n");
         if (p.fiducials) {
             J.w(JsonOut::str("fiducials") + ": [");
             const double xs[4] = {bed_center.x() - fid_off, bed_center.x() + fid_off, bed_center.x() + fid_off, bed_center.x() - fid_off};
             const double ys[4] = {bed_center.y() - fid_off, bed_center.y() - fid_off, bed_center.y() + fid_off, bed_center.y() + fid_off};
+            const char* ids[4] = {"SW", "SE", "NE", "NW"};
             for (int i = 0; i < 4; ++i) {
                 if (i) J.body += ",";
-                J.body += "{" + JsonOut::str("x") + ":" + JsonOut::num(xs[i]) + "," + JsonOut::str("y") + ":" + JsonOut::num(ys[i]) + "}";
+                J.body += "{" + JsonOut::str("x") + ":" + JsonOut::num(xs[i])
+                       + "," + JsonOut::str("y") + ":" + JsonOut::num(ys[i])
+                       + "," + JsonOut::str("id") + ":" + JsonOut::str(ids[i]);
+                if (p.fiducial_ids)
+                    J.body += "," + JsonOut::str("notch_corner") + ":" + JsonOut::str(ids[i]);
+                J.body += "}";
             }
             J.body += "],\n";
         }
@@ -1210,6 +1457,44 @@ bool cli_emit_calib_outputs(const std::string &gcode_path,
             J.body += "{" + JsonOut::str("x") + ":" + JsonOut::num(cxs[i]) + "," + JsonOut::str("y") + ":" + JsonOut::num(cys[i]) + "}";
         }
         J.body += "]";
+        // ---- Struts list (11 entries: 4 fid+tail + 1 zone_S+tail + 1 zone_G + 1 zone_W + 4 C-loop) ----
+        //      Each strut overlaps its endpoints into the connecting objects by 0.5mm; the slicer
+        //      unions overlapping perimeters at slice time so the print peels off as one piece
+        //      (conflict check suppressed in OrcaSlicer.cpp for calibrate-type slices). Listed
+        //      here so AI-vision can mask the strut regions out during zone analysis.
+        if (p.struts && p.frame) {
+            const double fid_outer        = fid_off + 2.5;
+            const double frame_inner_edge = fid_outer + p.frame_margin;
+            const double tail_tip         = frame_inner_edge + 0.5;   // overlap into frame
+            const double C_outer          = corner_off + 3.0;
+            auto strut = [&](double from_x, double from_y, double to_x, double to_y, const std::string &label) {
+                J.body += "{" + JsonOut::str("label") + ":" + JsonOut::str(label)
+                       + "," + JsonOut::str("from") + ":{" + JsonOut::str("x") + ":" + JsonOut::num(bed_center.x() + from_x)
+                       + "," + JsonOut::str("y") + ":" + JsonOut::num(bed_center.y() + from_y) + "}"
+                       + "," + JsonOut::str("to") + ":{" + JsonOut::str("x") + ":" + JsonOut::num(bed_center.x() + to_x)
+                       + "," + JsonOut::str("y") + ":" + JsonOut::num(bed_center.y() + to_y) + "}"
+                       + "}";
+            };
+            J.body += ",\n";
+            J.w(JsonOut::str("struts") + ": [");
+            // 4 fid+tails (merged into fid polygon — overlap into frame at tip)
+            strut(-fid_off + 0.75, +fid_outer, -fid_off + 0.75, +tail_tip, "fid_TL_tail"); J.body += ",";
+            strut(+fid_off - 0.75, +fid_outer, +fid_off - 0.75, +tail_tip, "fid_TR_tail"); J.body += ",";
+            strut(+fid_off - 0.75, -fid_outer, +fid_off - 0.75, -tail_tip, "fid_BR_tail"); J.body += ",";
+            strut(-fid_off + 0.75, -fid_outer, -fid_off + 0.75, -tail_tip, "fid_BL_tail"); J.body += ",";
+            // 1 zone_S tail (merged into zone S polygon — overlap into frame at tip)
+            strut(-zone_pitch, row_y + p.zone_size / 2.0, -zone_pitch, +tail_tip, "zone_S_tail"); J.body += ",";
+            // 1 zone_G strut (standalone, overlap into top wall pair + frame)
+            strut(0.0, row_y + 8.7, 0.0, +tail_tip, "zone_G_strut"); J.body += ",";
+            // 1 zone_W strut (standalone, overlap into top wall + frame)
+            strut(+zone_pitch, row_y + 6.225, +zone_pitch, +tail_tip, "zone_W_strut"); J.body += ",";
+            // 4 C-loop struts (standalone, overlap into C-loop outer edge + nearest frame edge)
+            strut(-corner_off, +C_outer, -corner_off, +tail_tip, "C_TL_strut"); J.body += ",";
+            strut(+corner_off, +C_outer, +corner_off, +tail_tip, "C_TR_strut"); J.body += ",";
+            strut(+corner_off, -C_outer, +corner_off, -tail_tip, "C_BR_strut"); J.body += ",";
+            strut(-corner_off, -C_outer, -corner_off, -tail_tip, "C_BL_strut");
+            J.body += "]";
+        }
         if (p.frame && p.frame_layers > 0 && p.frame_width > 0.0) {
             // Frame inner/outer bbox in bed coords (model-space ±(fid_outer + margin) and +frame_width).
             const double fid_outer        = fid_off + 2.5;
