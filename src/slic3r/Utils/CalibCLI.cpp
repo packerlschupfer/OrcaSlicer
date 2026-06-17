@@ -33,6 +33,8 @@ CLICalibType cli_calib_type_from_string(const std::string &name)
     if (name == "pa-tower")                 return CLICalibType::PATower;
     if (name == "retraction-tower")         return CLICalibType::RetractionTower;
     if (name == "vfa-tower")                return CLICalibType::VFATower;
+    if (name == "z-ladder-banded")          return CLICalibType::ZLadderBanded;
+    if (name == "z-ladder-ramp")            return CLICalibType::ZLadderRamp;
     return CLICalibType::NoCalib;
 }
 
@@ -62,6 +64,11 @@ std::string cli_calib_resource_path(CLICalibType type)
         return root + "/calib/retraction/retraction_tower.drc";
     case CLICalibType::VFATower:
         return root + "/calib/vfa/vfa.drc";
+    case CLICalibType::ZLadderBanded:
+    case CLICalibType::ZLadderRamp:
+        // Procedural — use any existing 3MF as a load-pipeline placeholder; cli_build_zladder
+        // wipes the Model and rebuilds.
+        return root + "/calib/filament_flow/Orca-LinearFlow.3mf";
     default:
         return std::string();
     }
@@ -1339,6 +1346,32 @@ bool cli_tower_get_calib_params(CLICalibType type, const CLITowerParams &params,
     }
 }
 
+//ORCA: Translate CLIZLadderParams → Calib_Params. The Print engine's per-extrusion hook in
+//      GCode::extrude_path() reads these fields and emits SET_GCODE_OFFSET Z_ADJUST per fill line.
+bool cli_zladder_get_calib_params(CLICalibType type, const CLIZLadderParams &params,
+                                  const DynamicPrintConfig &full_config, Calib_Params &out)
+{
+    out = Calib_Params{};
+    const bool is_banded = (type == CLICalibType::ZLadderBanded);
+    out.mode  = is_banded ? CalibMode::Calib_ZLadder_Banded : CalibMode::Calib_ZLadder_Ramp;
+    out.start = params.start_mm;
+    out.end   = params.end_mm;
+    out.step  = is_banded && params.steps > 1
+                ? (params.end_mm - params.start_mm) / static_cast<double>(params.steps - 1)
+                : 0.0;
+    out.ladder_steps          = is_banded ? params.steps : 0;
+    out.ladder_band_height_mm = is_banded ? params.band_height_mm : 0.0;
+
+    // Pad Y range in MODEL coords (centered around 0). The GCode helper reads
+    // path.polyline.first_point().y() which is in model space — the bed-center translation
+    // is applied later at G1 emission time.
+    (void)full_config;
+    const double pad_h = is_banded ? (params.steps * params.band_height_mm) : params.height_mm;
+    out.ladder_pad_y_lo = -pad_h / 2.0;
+    out.ladder_pad_y_hi = +pad_h / 2.0;
+    return true;
+}
+
 // ============================================================
 // Unified calibration outputs (gcode header metadata + JSON sidecar).
 // ============================================================
@@ -1399,6 +1432,8 @@ const char* calib_type_name(CLICalibType t)
     case CLICalibType::PATower:                      return "pa-tower";
     case CLICalibType::RetractionTower:              return "retraction-tower";
     case CLICalibType::VFATower:                     return "vfa-tower";
+    case CLICalibType::ZLadderBanded:                return "z-ladder-banded";
+    case CLICalibType::ZLadderRamp:                  return "z-ladder-ramp";
     default:                                         return "none";
     }
 }
@@ -1497,6 +1532,7 @@ bool cli_emit_calib_outputs(const std::string &gcode_path,
                             const CLIZCalParams *zcal_params,
                             const CLITowerParams *tower_params,
                             const CLIFlowRateParams *flow_params,
+                            const CLIZLadderParams *zladder_params,
                             const Model *model)
 {
     if (type == CLICalibType::NoCalib) return false;
@@ -1756,6 +1792,78 @@ bool cli_emit_calib_outputs(const std::string &gcode_path,
         }
         J.indent = 1; J.w("]\n");
     }
+    else if (zladder_params && (type == CLICalibType::ZLadderBanded || type == CLICalibType::ZLadderRamp)) {
+        const auto &p = *zladder_params;
+        const bool is_banded = (type == CLICalibType::ZLadderBanded);
+        const double pad_h = is_banded ? (p.steps * p.band_height_mm) : p.height_mm;
+        const double y_lo  = bed_center.y() - pad_h / 2.0;
+        const double y_hi  = bed_center.y() + pad_h / 2.0;
+        const double x_lo  = bed_center.x() - p.width_mm / 2.0;
+        const double x_hi  = bed_center.x() + p.width_mm / 2.0;
+        const double step  = is_banded && p.steps > 1
+                             ? (p.end_mm - p.start_mm) / static_cast<double>(p.steps - 1)
+                             : 0.0;
+
+        meta << boost::format("; pad_bbox = X%1$.2f,Y%2$.2f X%3$.2f,Y%4$.2f\n") % x_lo % y_lo % x_hi % y_hi;
+        meta << boost::format("; z_offset_range_mm = %1$.4f..%2$.4f\n") % p.start_mm % p.end_mm;
+        if (is_banded) {
+            meta << boost::format("; steps = %1%\n") % p.steps;
+            meta << boost::format("; step_mm = %1$.4f\n") % step;
+            meta << boost::format("; band_height_mm = %1$.2f\n") % p.band_height_mm;
+            for (int i = 0; i < p.steps; ++i) {
+                const double bz   = p.start_mm + i * step;
+                const double byl  = y_lo + i * p.band_height_mm;
+                const double byh  = byl + p.band_height_mm;
+                meta << boost::format("; band_%1% = z_offset=%2$+.4f y_low=%3$.2f y_high=%4$.2f\n")
+                    % i % bz % byl % byh;
+            }
+        } else {
+            meta << boost::format("; height_mm = %1$.2f\n") % p.height_mm;
+        }
+
+        // JSON
+        J.w(JsonOut::str("params") + ": {");
+        J.body += JsonOut::str("start_mm") + ":" + JsonOut::num(p.start_mm)
+               + "," + JsonOut::str("end_mm") + ":" + JsonOut::num(p.end_mm);
+        if (is_banded) {
+            J.body += "," + JsonOut::str("steps") + ":" + std::to_string(p.steps)
+                   + "," + JsonOut::str("step_mm") + ":" + JsonOut::num(step)
+                   + "," + JsonOut::str("band_height_mm") + ":" + JsonOut::num(p.band_height_mm);
+        } else {
+            J.body += "," + JsonOut::str("height_mm") + ":" + JsonOut::num(p.height_mm);
+        }
+        J.body += "},\n";
+        J.w(JsonOut::str("value_key") + ": " + JsonOut::str("z_offset_mm") + ",\n");
+        J.w(JsonOut::str("pad_bbox") + ": {"
+            + JsonOut::str("x_min") + ":" + JsonOut::num(x_lo) + ","
+            + JsonOut::str("y_min") + ":" + JsonOut::num(y_lo) + ","
+            + JsonOut::str("x_max") + ":" + JsonOut::num(x_hi) + ","
+            + JsonOut::str("y_max") + ":" + JsonOut::num(y_hi) + "}");
+        if (is_banded) {
+            J.body += ",\n";
+            J.w(JsonOut::str("bands") + ": [\n"); J.indent = 2;
+            for (int i = 0; i < p.steps; ++i) {
+                const double bz   = p.start_mm + i * step;
+                const double byl  = y_lo + i * p.band_height_mm;
+                const double byh  = byl + p.band_height_mm;
+                J.w("{" + JsonOut::str("index") + ":" + std::to_string(i)
+                  + "," + JsonOut::str("z_offset_mm") + ":" + JsonOut::num(bz)
+                  + "," + JsonOut::str("y_low_mm") + ":" + JsonOut::num(byl)
+                  + "," + JsonOut::str("y_high_mm") + ":" + JsonOut::num(byh) + "}");
+                if (i + 1 < p.steps) J.body += ",";
+                J.body += "\n";
+            }
+            J.indent = 1; J.w("]");
+        } else {
+            J.body += ",\n";
+            J.w(JsonOut::str("ramp") + ": {"
+                + JsonOut::str("y_low_mm") + ":" + JsonOut::num(y_lo) + ","
+                + JsonOut::str("z_offset_at_low_mm") + ":" + JsonOut::num(p.start_mm) + ","
+                + JsonOut::str("y_high_mm") + ":" + JsonOut::num(y_hi) + ","
+                + JsonOut::str("z_offset_at_high_mm") + ":" + JsonOut::num(p.end_mm) + "}");
+        }
+        J.body += "\n";
+    }
     meta << "; ---- END ORCA CALIBRATION METADATA ----\n";
     J.indent = 0; J.w("}\n");
 
@@ -1790,6 +1898,106 @@ bool cli_emit_calib_outputs(const std::string &gcode_path,
     BOOST_LOG_TRIVIAL(info) << "cli_emit_calib_outputs: wrote metadata into " << gcode_path
                             << " and sidecar " << json_path.string();
     return true;
+}
+
+// ============================================================
+// Z-ladder: single-pad Z-offset sweep (banded or ramp).
+// ============================================================
+
+void cli_build_zladder(Model &model, DynamicPrintConfig &full_config,
+                       CLICalibType type, const CLIZLadderParams &params)
+{
+    // Wipe placeholder.
+    while (!model.objects.empty()) model.delete_object(model.objects.size() - 1);
+
+    const bool   is_banded = (type == CLICalibType::ZLadderBanded);
+    const double pad_w     = params.width_mm;
+    const double pad_h     = is_banded ? (params.steps * params.band_height_mm) : params.height_mm;
+
+    // Pad centered at plate origin.
+    ModelObject* pad = add_box_object(model, "zladder_pad", 0.0, 0.0, pad_w, pad_h, ZCAL_LAYER_THICKNESS);
+    // Per-object configs: rectilinear bottom (so X-aligned lines emerge in monotonic Y order),
+    // single perimeter, no top/bottom shells beyond the one we have (the mesh IS one layer tall),
+    // no sparse infill (single layer = entirely the bottom surface).
+    pad->config.set_key_value("wall_loops", new ConfigOptionInt(1));
+    pad->config.set_key_value("bottom_shell_layers", new ConfigOptionInt(1));
+    pad->config.set_key_value("top_shell_layers", new ConfigOptionInt(0));
+    pad->config.set_key_value("sparse_infill_density", new ConfigOptionPercent(0));
+    //ORCA: ipMonotonicLine guarantees fill lines are emitted in monotonic Y order, each as a
+    //      separate ExtrusionPath (vs ipRectilinear which packs many lines into one multipath
+    //      where path.polyline.first_point().y() only reflects the start of the entire snake).
+    //      Monotonic ordering is required so each band's lines print consecutively.
+    pad->config.set_key_value("bottom_surface_pattern", new ConfigOptionEnum<InfillPattern>(ipMonotonicLine));
+    pad->config.set_key_value("top_surface_pattern", new ConfigOptionEnum<InfillPattern>(ipMonotonicLine));
+    pad->config.set_key_value("infill_direction", new ConfigOptionFloat(0.0));      // 0° = X-axis aligned
+    pad->config.set_key_value("solid_infill_direction", new ConfigOptionFloat(0.0));
+    pad->config.set_key_value("alternate_extra_wall", new ConfigOptionBool(false));
+    pad->config.set_key_value("only_one_wall_top", new ConfigOptionBool(true));
+
+    // Fiducials at 4 corners outside the pad, 5×5 with unique notches per corner (reuse the
+    // L-shape design from z-offset-pattern). Margin 5mm from pad edge.
+    if (params.fiducials) {
+        const double fx = pad_w / 2.0 + 5.0;
+        const double fy = pad_h / 2.0 + 5.0;
+        const double FH = 2.5, NOTCH = 1.5;
+        struct FidDef { double x, y; const char* name; int notch_corner_idx; };
+        FidDef fids[4] = {
+            { -fx, +fy, "zladder_fid_TL", 0 },   // notch NW
+            { +fx, +fy, "zladder_fid_TR", 1 },   // notch NE
+            { +fx, -fy, "zladder_fid_BR", 2 },   // notch SE
+            { -fx, -fy, "zladder_fid_BL", 3 },   // notch SW
+        };
+        for (auto &f : fids) {
+            // Simple L-shape (two abutting boxes) per fiducial — works because conflict
+            // check is suppressed for calibrate-type runs.
+            const bool north = (f.notch_corner_idx == 0 || f.notch_corner_idx == 1);
+            const bool east  = (f.notch_corner_idx == 1 || f.notch_corner_idx == 2);
+            const double A_h    = (2 * FH) - NOTCH;                                 // 3.5
+            const double A_yc   = north ? f.y - NOTCH/2.0 : f.y + NOTCH/2.0;
+            ModelObject* moA = add_box_object(model, std::string(f.name) + "_A",
+                                              f.x, A_yc, 2*FH, A_h, ZCAL_LAYER_THICKNESS);
+            set_solid_pad_config(moA);
+            const double B_w  = (2 * FH) - NOTCH;
+            const double B_xc = east ? f.x - NOTCH/2.0 : f.x + NOTCH/2.0;
+            const double B_yc = north ? f.y + (A_h / 2.0) + (NOTCH / 2.0)
+                                       : f.y - (A_h / 2.0) - (NOTCH / 2.0);
+            ModelObject* moB = add_box_object(model, std::string(f.name) + "_B",
+                                              B_xc, B_yc, B_w, NOTCH, ZCAL_LAYER_THICKNESS);
+            set_solid_pad_config(moB);
+        }
+    }
+
+    // Scale bar to the right of the pad — vertical orientation (10mm tall, ticks pointing east).
+    // Reuse the comb design but rotated. For simplicity, a horizontal scale bar below the pad.
+    if (params.scale_bar) {
+        const double sb_y = -(pad_h / 2.0 + 8.0);
+        ModelObject* baseline = add_box_object(model, "zladder_scale_baseline",
+                                                0.0, sb_y, 10.0, 0.5, ZCAL_LAYER_THICKNESS);
+        set_solid_pad_config(baseline);
+        for (int i = 0; i <= 10; ++i) {
+            const double tx = -5.0 + i;
+            const double tick_h = (i == 0 || i == 10) ? 3.0 : (i == 5 ? 2.5 : 1.5);
+            ModelObject* tick = add_box_object(model,
+                                                (boost::format("zladder_scale_tick_%1%mm") % i).str(),
+                                                tx, sb_y - 0.5 - tick_h / 2.0,
+                                                0.45, tick_h, ZCAL_LAYER_THICKNESS);
+            set_solid_pad_config(tick);
+        }
+    }
+
+    // Print-config overrides — single layer hard cap.
+    full_config.set_key_value("layer_height", new ConfigOptionFloat(ZCAL_LAYER_THICKNESS));
+    full_config.set_key_value("initial_layer_print_height", new ConfigOptionFloat(ZCAL_LAYER_THICKNESS));
+    full_config.set_key_value("brim_type", new ConfigOptionEnum<BrimType>(btNoBrim));
+    full_config.set_key_value("brim_width", new ConfigOptionFloat(0.0));
+    full_config.set_key_value("skirt_loops", new ConfigOptionInt(1));
+    full_config.set_key_value("skirt_distance", new ConfigOptionFloat(4.0));
+    full_config.set_key_value("initial_layer_speed", new ConfigOptionFloat(25.0));
+    full_config.set_key_value("enable_wrapping_detection", new ConfigOptionBool(false));
+    full_config.set_key_value("resonance_avoidance", new ConfigOptionBool(false));
+
+    BOOST_LOG_TRIVIAL(info) << boost::format("cli_build_zladder: type=%1% width=%2$.1f height=%3$.1f steps=%4% start=%5$.3f end=%6$.3f")
+        % (is_banded ? "banded" : "ramp") % pad_w % pad_h % params.steps % params.start_mm % params.end_mm;
 }
 
 }
