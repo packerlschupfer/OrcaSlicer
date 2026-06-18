@@ -38,10 +38,15 @@ struct Calib_Params
 {
     Calib_Params() : mode(CalibMode::Calib_None){};
     int extruder_id = 0;
-    double    start, end, step;
-    bool      print_numbers;
-    double freqStartX, freqEndX, freqStartY, freqEndY;
-    int test_model;
+    //ORCA: default-init the previously-uninitialized fields. Pre-existing in upstream;
+    //      cli_zladder_get_calib_params doing `out = Calib_Params{}` made GCC start
+    //      warning about reads of uninitialized memory from the move-assignment chain.
+    //      Neutral defaults — any real caller (PA tower, input shaping, etc.) sets these
+    //      explicitly anyway. Safe because reading an uninitialized scalar is UB.
+    double    start = 0.0, end = 0.0, step = 0.0;
+    bool      print_numbers = false;
+    double freqStartX = 0.0, freqEndX = 0.0, freqStartY = 0.0, freqEndY = 0.0;
+    int test_model = 0;
     std::string shaper_type;
     std::vector<double> accelerations;
     std::vector<double> speeds;
