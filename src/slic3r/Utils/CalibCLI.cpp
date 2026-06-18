@@ -1849,7 +1849,8 @@ bool cli_emit_calib_outputs(const std::string &gcode_path,
                 J.w("{" + JsonOut::str("index") + ":" + std::to_string(i)
                   + "," + JsonOut::str("z_offset_mm") + ":" + JsonOut::num(bz)
                   + "," + JsonOut::str("y_low_mm") + ":" + JsonOut::num(byl)
-                  + "," + JsonOut::str("y_high_mm") + ":" + JsonOut::num(byh) + "}");
+                  + "," + JsonOut::str("y_high_mm") + ":" + JsonOut::num(byh)
+                  + "," + JsonOut::str("id_dots") + ":" + std::to_string(i + 1) + "}");
                 if (i + 1 < p.steps) J.body += ",";
                 J.body += "\n";
             }
@@ -1861,6 +1862,37 @@ bool cli_emit_calib_outputs(const std::string &gcode_path,
                 + JsonOut::str("z_offset_at_low_mm") + ":" + JsonOut::num(p.start_mm) + ","
                 + JsonOut::str("y_high_mm") + ":" + JsonOut::num(y_hi) + ","
                 + JsonOut::str("z_offset_at_high_mm") + ":" + JsonOut::num(p.end_mm) + "}");
+        }
+
+        // Fiducials (z-ladder version: 4 corners outside the pad at ±(pad/2 + 5),
+        // with unique per-corner notches matching the L-shape mesh in cli_build_zladder).
+        if (p.fiducials) {
+            const double fx = p.width_mm / 2.0 + 5.0;
+            const double fy = pad_h     / 2.0 + 5.0;
+            const char* ids[4]    = {"TL", "TR", "BR", "BL"};
+            const char* notches[4] = {"NW", "NE", "SE", "SW"};
+            const double sx[4] = {-fx, +fx, +fx, -fx};
+            const double sy[4] = {+fy, +fy, -fy, -fy};
+            J.body += ",\n";
+            J.w(JsonOut::str("fiducials") + ": [");
+            for (int i = 0; i < 4; ++i) {
+                if (i) J.body += ",";
+                J.body += "{" + JsonOut::str("x") + ":" + JsonOut::num(bed_center.x() + sx[i])
+                       + "," + JsonOut::str("y") + ":" + JsonOut::num(bed_center.y() + sy[i])
+                       + "," + JsonOut::str("id") + ":" + JsonOut::str(ids[i])
+                       + "," + JsonOut::str("notch_corner") + ":" + JsonOut::str(notches[i])
+                       + "}";
+            }
+            J.body += "]";
+        }
+        if (p.scale_bar) {
+            const double sb_y = -(pad_h / 2.0 + 8.0);
+            J.body += ",\n";
+            J.w(JsonOut::str("scale_bar") + ": {"
+                + JsonOut::str("origin") + ":{" + JsonOut::str("x") + ":" + JsonOut::num(bed_center.x() - 5.0)
+                + "," + JsonOut::str("y") + ":" + JsonOut::num(bed_center.y() + sb_y) + "},"
+                + JsonOut::str("length_mm") + ":10,"
+                + JsonOut::str("tick_count") + ":11}");
         }
         J.body += "\n";
     }
@@ -1982,6 +2014,33 @@ void cli_build_zladder(Model &model, DynamicPrintConfig &full_config,
                                                 tx, sb_y - 0.5 - tick_h / 2.0,
                                                 0.45, tick_h, ZCAL_LAYER_THICKNESS);
             set_solid_pad_config(tick);
+        }
+    }
+
+    // Per-band ID dots (banded only). Band N gets N+1 dots placed to the EAST of the pad,
+    // at the band's vertical center. Dot Y is OUTSIDE the pad's bottom-surface region
+    // (placed at pad_x + 4mm in X) so the z-ladder modulation hook still fires correctly
+    // when crossing into the band's Y range — but the dots themselves sit beyond the pad
+    // bbox in X, where the fill helper doesn't run. This lets a peeled fragment be
+    // attributed back to its band by counting the dots adjacent to it.
+    if (is_banded) {
+        const double dot_size = 0.8;
+        const double dot_gap  = 0.4;                                 // between dots in a cluster
+        const double dot_x    = pad_w / 2.0 + 2.0;                   // 2mm east of pad
+        const double band_yc0 = -pad_h / 2.0 + params.band_height_mm / 2.0;
+        for (int b = 0; b < params.steps; ++b) {
+            const double cluster_yc = band_yc0 + b * params.band_height_mm;
+            const int n_dots = b + 1;
+            // Stack dots vertically with dot_gap between them, centered on cluster_yc.
+            const double cluster_h = n_dots * dot_size + (n_dots - 1) * dot_gap;
+            const double first_y   = cluster_yc - cluster_h / 2.0 + dot_size / 2.0;
+            for (int i = 0; i < n_dots; ++i) {
+                const double dy = first_y + i * (dot_size + dot_gap);
+                ModelObject* mo = add_box_object(model,
+                                                  (boost::format("zladder_id_band%1%_dot%2%") % b % i).str(),
+                                                  dot_x, dy, dot_size, dot_size, ZCAL_LAYER_THICKNESS);
+                set_solid_pad_config(mo);
+            }
         }
     }
 
