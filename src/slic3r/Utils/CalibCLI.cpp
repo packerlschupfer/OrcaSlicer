@@ -266,6 +266,14 @@ void cli_apply_flowrate_calib(Model &model, DynamicPrintConfig &full_config, con
         mo->config.set_key_value("thick_internal_bridges", new ConfigOptionBool(false));
         mo->config.set_key_value("enable_extra_bridge_layer", new ConfigOptionEnum<EnableExtraBridgeLayer>(eblDisabled));
         mo->config.set_key_value("internal_bridge_density", new ConfigOptionPercent(100));
+        //ORCA: Mirror upstream Plater::adjust_settings_for_flowrate_calib exactly
+        //      (Plater.cpp:13025+). The current GUI values are the actively-maintained
+        //      "New YOLO" introduced in upstream PR #6479 (2024-08): 35% sparse / 2 bottom
+        //      shells / 5 top shells / rectilinear sparse fill. The OrcaSlicer wiki page
+        //      on YOLO is pre-2024 and stale (it still describes 1+1 shells / 100% / chord
+        //      sparse) — earlier brief 2026-06-18 cited the wiki, but the code is the
+        //      truth. The visible-top archimedean signal comes from `top_surface_pattern`
+        //      below via `params.pattern`.
         mo->config.set_key_value("sparse_infill_density", new ConfigOptionPercent(35));
         mo->config.set_key_value("min_width_top_surface", new ConfigOptionFloatOrPercent(100, true));
         mo->config.set_key_value("bottom_shell_layers", new ConfigOptionInt(2));
@@ -370,6 +378,34 @@ void cli_apply_flowrate_calib(Model &model, DynamicPrintConfig &full_config, con
     full_config.set_key_value("enable_wrapping_detection", new ConfigOptionBool(false));
     full_config.set_key_value("max_volumetric_extrusion_rate_slope", new ConfigOptionFloat(0));
     full_config.set_key_value("resonance_avoidance", new ConfigOptionBool(false));
+
+    //ORCA: Mirror the per-object YOLO overrides GLOBALLY too. The gcode header at
+    //      the top of the file reports the GLOBAL print_config, NOT per-object
+    //      overrides — so without this block the header showed e.g.
+    //      `sparse_infill_pattern = gyroid` (from the user preset) even though
+    //      the actual extrusion paths used the per-object rectilinear setting.
+    //      Mirroring globally makes the header report what the slicer actually
+    //      emitted, which downstream tooling and operators rely on to verify
+    //      the calibration ran with the right values. Values intentionally
+    //      identical to the per-object block above. `--flow-brim` is also
+    //      mirrored here so the flag actually changes brim_type in the header
+    //      (the per-object brim was only applied when the flag was on; the
+    //      else-branch here resets brim_type globally for the off case too).
+    full_config.set_key_value("wall_loops", new ConfigOptionInt(1));
+    full_config.set_key_value("top_shell_layers", new ConfigOptionInt(5));
+    full_config.set_key_value("bottom_shell_layers", new ConfigOptionInt(2));
+    full_config.set_key_value("sparse_infill_density", new ConfigOptionPercent(35));
+    full_config.set_key_value("skirt_loops", new ConfigOptionInt(0));
+    full_config.set_key_value("sparse_infill_pattern", new ConfigOptionEnum<InfillPattern>(ipRectilinear));
+    full_config.set_key_value("top_surface_pattern", new ConfigOptionEnum<InfillPattern>(params.pattern));
+    if (params.brim_enabled) {
+        full_config.set_key_value("brim_type", new ConfigOptionEnum<BrimType>(btOuterOnly));
+        full_config.set_key_value("brim_width", new ConfigOptionFloat(params.brim_width));
+        full_config.set_key_value("brim_object_gap", new ConfigOptionFloat(0.0));
+    } else {
+        full_config.set_key_value("brim_type", new ConfigOptionEnum<BrimType>(btNoBrim));
+        full_config.set_key_value("brim_width", new ConfigOptionFloat(0.0));
+    }
 
     BOOST_LOG_TRIVIAL(info) << boost::format("cli_apply_flowrate_calib: pass=%1% is_linear=%2% pattern=%3% brim=%4% objects=%5%")
         % params.pass % params.is_linear % static_cast<int>(params.pattern) % params.brim_enabled % model.objects.size();
