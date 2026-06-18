@@ -11089,6 +11089,14 @@ CLIMiscConfigDef::CLIMiscConfigDef()
     def->tooltip = L("Add a 10mm scale bar with 11 ticks for DPI verification. Default ON.");
     def->set_default_value(new ConfigOptionBool(true));
 
+    def = this->add("zladder_id_dots", coBool);
+    def->label = L("Z-ladder per-band ID dots");
+    def->tooltip = L("Add 1+2+3+4+5 small dots east of the pad identifying which band a "
+                     "peeled fragment came from. Default OFF — in practice the pad never "
+                     "fragments and the dots just add print time and visual clutter; "
+                     "fiducials + scale bar already identify bands by Y position.");
+    def->set_default_value(new ConfigOptionBool(false));
+
     //ORCA: sub-flags for --calibrate-type temp-tower / vol-speed-tower / pa-tower.
     def = this->add("temp_tower_start", coFloat);
     def->label = L("Temp tower start (°C)");
