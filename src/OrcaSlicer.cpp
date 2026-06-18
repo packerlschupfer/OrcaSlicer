@@ -1602,6 +1602,8 @@ int CLI::run(int argc, char **argv)
                 cli_zladder_params.fiducials = fb->value;
             if (ConfigOptionBool  *sb = m_config.option<ConfigOptionBool>("zladder_scale_bar"); sb)
                 cli_zladder_params.scale_bar = sb->value;
+            if (ConfigOptionBool  *db = m_config.option<ConfigOptionBool>("zladder_id_dots"); db)
+                cli_zladder_params.id_dots = db->value;
         } else {
             // Resolve flow-rate sub-flags
             Slic3r::cli_flowrate_params_for_type(cli_calib_type, cli_flow_params.pass, cli_flow_params.is_linear);

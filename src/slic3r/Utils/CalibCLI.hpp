@@ -212,6 +212,10 @@ struct CLIZLadderParams {
     double height_mm = 75.0;       // ramp only: total Y-extent of the ramp pad
     bool   fiducials = true;
     bool   scale_bar = true;
+    //ORCA: per-band ID dots east of the pad (banded only). Default OFF — slicer-chat
+    //      2026-06-19: the pad never fragments in practice, fiducials+scale-bar already
+    //      identify bands, and the dots just add print time + visual clutter.
+    bool   id_dots   = false;
 };
 
 void cli_build_zladder(Model &model, DynamicPrintConfig &full_config,
