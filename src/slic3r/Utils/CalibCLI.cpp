@@ -1926,11 +1926,16 @@ bool cli_emit_calib_outputs(const std::string &gcode_path,
                 const double bz   = p.start_mm + i * step;
                 const double byl  = y_lo + i * p.band_height_mm;
                 const double byh  = byl + p.band_height_mm;
+                //ORCA: omit id_dots field entirely when dots aren't physically printed
+                //      — sidecar should match the geometry on the plate.
+                const std::string id_dots_extra = p.id_dots
+                    ? ("," + JsonOut::str("id_dots") + ":" + std::to_string(i + 1))
+                    : std::string{};
                 J.w("{" + JsonOut::str("index") + ":" + std::to_string(i)
                   + "," + JsonOut::str("z_offset_mm") + ":" + JsonOut::num(bz)
                   + "," + JsonOut::str("y_low_mm") + ":" + JsonOut::num(byl)
                   + "," + JsonOut::str("y_high_mm") + ":" + JsonOut::num(byh)
-                  + "," + JsonOut::str("id_dots") + ":" + std::to_string(i + 1) + "}");
+                  + id_dots_extra + "}");
                 if (i + 1 < p.steps) J.body += ",";
                 J.body += "\n";
             }
@@ -2097,13 +2102,11 @@ void cli_build_zladder(Model &model, DynamicPrintConfig &full_config,
         }
     }
 
-    // Per-band ID dots (banded only). Band N gets N+1 dots placed to the EAST of the pad,
-    // at the band's vertical center. Dot Y is OUTSIDE the pad's bottom-surface region
-    // (placed at pad_x + 4mm in X) so the z-ladder modulation hook still fires correctly
-    // when crossing into the band's Y range — but the dots themselves sit beyond the pad
-    // bbox in X, where the fill helper doesn't run. This lets a peeled fragment be
-    // attributed back to its band by counting the dots adjacent to it.
-    if (is_banded) {
+    // Per-band ID dots (banded only, opt-in via params.id_dots — default OFF per
+    // slicer-chat 2026-06-19; the pad never fragments in practice). Band N gets N+1 dots
+    // placed to the EAST of the pad, at the band's vertical center. This lets a peeled
+    // fragment be attributed back to its band by counting adjacent dots.
+    if (is_banded && params.id_dots) {
         const double dot_size = 0.8;
         const double dot_gap  = 0.4;                                 // between dots in a cluster
         const double dot_x    = pad_w / 2.0 + 2.0;                   // 2mm east of pad
