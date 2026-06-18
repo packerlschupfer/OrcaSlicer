@@ -10932,6 +10932,15 @@ CLIMiscConfigDef::CLIMiscConfigDef()
     def->cli_params = "R";
     def->set_default_value(new ConfigOptionFloat(-1.0));
 
+    def = this->add("flow_height", coFloat);
+    def->label = L("Flow calibration block height");
+    def->tooltip = L("Z-extent of each flow-rate calibration block in mm. Was hardcoded 2.0mm "
+                     "(10 layers at 0.20mm); default 3.0mm gives more mass for peel and more "
+                     "top-surface area for eyeball or scanner judgment. Applies to all "
+                     "--calibrate-type flow-* variants.");
+    def->cli_params = "mm";
+    def->set_default_value(new ConfigOptionFloat(3.0));
+
     //ORCA: sub-flags for --calibrate-type z-offset-pattern.
     def = this->add("zcal_size", coFloat);
     def->label = L("Z-cal plate size");

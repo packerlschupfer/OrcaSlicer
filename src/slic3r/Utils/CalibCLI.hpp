@@ -26,6 +26,7 @@ enum class CLICalibType {
     NoCalib,
     FlowRate_YOLO_Recommended,
     FlowRate_YOLO_Perfectionist,
+    FlowRate_YOLO_Coarse,
     FlowRate_Pass1,
     FlowRate_Pass2,
     ZOffsetPattern,
@@ -56,6 +57,8 @@ struct CLIFlowRateParams {
     double         brim_extra_gap = 0.0;          // mm, only used when brim_enabled
     int            max_blocks = -1;               // -1 = all; otherwise keep N blocks closest to modifier=0
     double         max_modifier = -1.0;           // <=0 = no filter; otherwise keep blocks with |modifier| <= this
+    double         flow_height_mm = 3.0;          // block Z-extent (was hardcoded 2.0 = 10 layers @ 0.20)
+    bool           is_coarse = false;             // coarse variant: 5 procedural blocks at ±0.10, ±0.05, 0
 };
 void cli_apply_flowrate_calib(Model &model, DynamicPrintConfig &full_config, const CLIFlowRateParams &params);
 

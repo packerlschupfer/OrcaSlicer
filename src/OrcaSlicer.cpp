@@ -1617,6 +1617,9 @@ int CLI::run(int argc, char **argv)
                 cli_flow_params.max_blocks = n->value;
             if (ConfigOptionFloat *r = m_config.option<ConfigOptionFloat>("flow_range"); r)
                 cli_flow_params.max_modifier = r->value;
+            if (ConfigOptionFloat *h = m_config.option<ConfigOptionFloat>("flow_height"); h)
+                cli_flow_params.flow_height_mm = h->value;
+            cli_flow_params.is_coarse = (cli_calib_type == Slic3r::CLICalibType::FlowRate_YOLO_Coarse);
         }
         // Force --slice 0 if the user didn't pass one explicitly — calibration is meaningless without a slice action.
         if (plate_to_slice <= 0 && !slice_option)
@@ -6638,6 +6641,7 @@ int CLI::run(int argc, char **argv)
                                         const Slic3r::CLIFlowRateParams *flow_for_emit =
                                             (cli_calib_type == Slic3r::CLICalibType::FlowRate_YOLO_Recommended ||
                                              cli_calib_type == Slic3r::CLICalibType::FlowRate_YOLO_Perfectionist ||
+                                             cli_calib_type == Slic3r::CLICalibType::FlowRate_YOLO_Coarse ||
                                              cli_calib_type == Slic3r::CLICalibType::FlowRate_Pass1 ||
                                              cli_calib_type == Slic3r::CLICalibType::FlowRate_Pass2) ? &cli_flow_params : nullptr;
                                         const Slic3r::CLIZLadderParams *zladder_for_emit =
