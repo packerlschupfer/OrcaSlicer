@@ -25,6 +25,7 @@ CLICalibType cli_calib_type_from_string(const std::string &name)
 {
     if (name == "flow-yolo-recommended")    return CLICalibType::FlowRate_YOLO_Recommended;
     if (name == "flow-yolo-perfectionist")  return CLICalibType::FlowRate_YOLO_Perfectionist;
+    if (name == "flow-yolo-coarse")         return CLICalibType::FlowRate_YOLO_Coarse;
     if (name == "flow-pass1")               return CLICalibType::FlowRate_Pass1;
     if (name == "flow-pass2")               return CLICalibType::FlowRate_Pass2;
     if (name == "z-offset-pattern")         return CLICalibType::ZOffsetPattern;
@@ -46,6 +47,10 @@ std::string cli_calib_resource_path(CLICalibType type)
         return root + "/calib/filament_flow/Orca-LinearFlow.3mf";
     case CLICalibType::FlowRate_YOLO_Perfectionist:
         return root + "/calib/filament_flow/Orca-LinearFlow_fine.3mf";
+    case CLICalibType::FlowRate_YOLO_Coarse:
+        // Coarse uses any 3MF as a load-pipeline placeholder; cli_apply_flowrate_calib
+        // wipes the model and rebuilds 5 procedural blocks at modifiers ±0.10, ±0.05, 0.
+        return root + "/calib/filament_flow/Orca-LinearFlow.3mf";
     case CLICalibType::FlowRate_Pass1:
         return root + "/calib/filament_flow/flowrate-test-pass1.3mf";
     case CLICalibType::FlowRate_Pass2:
@@ -79,6 +84,7 @@ void cli_flowrate_params_for_type(CLICalibType type, int &pass, bool &is_linear)
     switch (type) {
     case CLICalibType::FlowRate_YOLO_Recommended:   pass = 1; is_linear = true;  break;
     case CLICalibType::FlowRate_YOLO_Perfectionist: pass = 2; is_linear = true;  break;
+    case CLICalibType::FlowRate_YOLO_Coarse:        pass = 1; is_linear = true;  break;
     case CLICalibType::FlowRate_Pass1:              pass = 1; is_linear = false; break;
     case CLICalibType::FlowRate_Pass2:              pass = 2; is_linear = false; break;
     default:                                        pass = 1; is_linear = true;  break;
@@ -178,6 +184,37 @@ void cli_apply_flowrate_calib(Model &model, DynamicPrintConfig &full_config, con
         return;
     }
 
+    //ORCA: flow-yolo-coarse — wipe the placeholder 3MF and generate 5 procedural blocks at
+    //      modifiers ±0.10, ±0.05, 0 in a single row. The 11-block resource's modifiers max at
+    //      ±0.05 so it can't be subset for the coarse range; procedural is the cleanest fix.
+    //      Block size matches the existing 30mm footprint; Z is 2mm (pre-scale) so the standard
+    //      zscale formula produces the user's --flow-height. Per-object configs (top pattern,
+    //      wall_loops, sparse_infill_density, etc.) are applied below in the existing loop, same
+    //      as for the 11/16-block variants.
+    if (params.is_coarse) {
+        while (!model.objects.empty()) model.delete_object(model.objects.size() - 1);
+        const double bsize  = 30.0;
+        const double bpitch = 31.0;   // matches the 11-block plate's center-to-center spacing
+        struct CoarseBlock { double xc; const char* name; };
+        const CoarseBlock blocks[5] = {
+            { -2 * bpitch, "flowrate_m0.1" },
+            { -1 * bpitch, "flowrate_m0.05" },
+            {  0,          "flowrate_0"    },
+            { +1 * bpitch, "flowrate_0.05" },
+            { +2 * bpitch, "flowrate_0.1"  },
+        };
+        for (const auto &b : blocks) {
+            // Build a 30×30×2mm centered box; instance offset positions it on the plate.
+            TriangleMesh mesh(its_make_cube(bsize, bsize, 2.0));
+            mesh.translate(-bsize / 2.0f, -bsize / 2.0f, 0.0f);
+            ModelObject* mo = model.add_object();
+            mo->name = b.name;
+            mo->add_volume(std::move(mesh), ModelVolumeType::MODEL_PART, /*modify_to_center_geometry=*/false);
+            ModelInstance* inst = mo->add_instance();
+            inst->set_offset(Vec3d(b.xc, 0.0, 0.0));
+        }
+    }
+
     //ORCA: subset the loaded block-pair objects per --flow-blocks / --flow-range before any
     //      per-object/per-config work. Symmetric (keeps blocks closest to modifier=0).
     filter_flowrate_blocks(model, params.max_blocks, params.max_modifier);
@@ -192,7 +229,11 @@ void cli_apply_flowrate_calib(Model &model, DynamicPrintConfig &full_config, con
     const double layer_height    = nozzle_diameter / 2.0;
     double       first_layer_h   = full_config.option<ConfigOptionFloat>("initial_layer_print_height")->value;
     first_layer_h                = std::max(first_layer_h, layer_height);
-    const double zscale          = (first_layer_h + 9 * layer_height) / 2;
+    // ORCA: block Z-extent driven by --flow-height (default 3.0mm). Original 3MF resource is 2mm
+    //       (10 layers @ 0.20). zscale formula generalizes: total height = first_layer_h +
+    //       (n_layers - 1) × layer_height; mesh stays referenced to the original 2mm height.
+    const int    n_layers        = std::max(1, static_cast<int>(std::round(params.flow_height_mm / layer_height)));
+    const double zscale          = (first_layer_h + (n_layers - 1) * layer_height) / 2.0;
 
     //ORCA: apply scale via direct ModelObject transformation (matches GUI's selection.scale() semantics).
     const Vec3d scale_v = (xyScale > 1.2) ? Vec3d(xyScale, xyScale, zscale) : Vec3d(1.0, 1.0, zscale);
@@ -1424,6 +1465,7 @@ const char* calib_type_name(CLICalibType t)
     switch (t) {
     case CLICalibType::FlowRate_YOLO_Recommended:    return "flow-yolo-recommended";
     case CLICalibType::FlowRate_YOLO_Perfectionist:  return "flow-yolo-perfectionist";
+    case CLICalibType::FlowRate_YOLO_Coarse:         return "flow-yolo-coarse";
     case CLICalibType::FlowRate_Pass1:               return "flow-pass1";
     case CLICalibType::FlowRate_Pass2:               return "flow-pass2";
     case CLICalibType::ZOffsetPattern:               return "z-offset-pattern";
@@ -1760,6 +1802,7 @@ bool cli_emit_calib_outputs(const std::string &gcode_path,
     }
     else if (flow_params && (type == CLICalibType::FlowRate_YOLO_Recommended
                              || type == CLICalibType::FlowRate_YOLO_Perfectionist
+                             || type == CLICalibType::FlowRate_YOLO_Coarse
                              || type == CLICalibType::FlowRate_Pass1
                              || type == CLICalibType::FlowRate_Pass2)) {
         double cur_flowrate = 1.0;
@@ -1780,6 +1823,7 @@ bool cli_emit_calib_outputs(const std::string &gcode_path,
         // JSON
         J.w(JsonOut::str("flow_seed") + ": " + JsonOut::num(cur_flowrate) + ",\n");
         J.w(JsonOut::str("is_linear") + ": " + (flow_params->is_linear ? "true" : "false") + ",\n");
+        J.w(JsonOut::str("block_height_mm") + ": " + JsonOut::num(flow_params->flow_height_mm) + ",\n");
         J.w(JsonOut::str("blocks") + ": [\n"); J.indent = 2;
         for (size_t i = 0; i < blocks.size(); ++i) {
             J.w("{" + JsonOut::str("name") + ":" + JsonOut::str(blocks[i].name)
