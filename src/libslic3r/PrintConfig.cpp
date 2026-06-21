@@ -11079,23 +11079,36 @@ CLIMiscConfigDef::CLIMiscConfigDef()
     def->cli_params = "mm";
     def->set_default_value(new ConfigOptionFloat(60.0));
 
-    def = this->add("zladder_fiducials", coBool);
+    //ORCA: zladder visual-aid toggles. Type is coInt (0/1) not coBool so the operator can
+    //      explicitly opt in/out via `--zladder-fiducials 1` / `--zladder-fiducials 0` —
+    //      OrcaSlicer's bool parser deliberately ignores trailing values (Config.cpp:1660)
+    //      and the --no- prefix is upstream-disabled, so a bool here would be ON-only. Same
+    //      convention as the existing `--arrange` flag. Defaults all OFF — slicer-chat
+    //      2026-06-21: AI-vision auto-alignment is rare (most operators use a flatbed
+    //      scanner + band Y position), DPI verification is one-time per scanner install,
+    //      and the pad never fragments so the ID dots are useless in practice. Operators
+    //      who DO use vision/DPI explicitly opt in.
+    def = this->add("zladder_fiducials", coInt);
     def->label = L("Z-ladder fiducials");
-    def->tooltip = L("Add 4 corner fiducial marks for AI-vision auto-alignment. Default ON.");
-    def->set_default_value(new ConfigOptionBool(true));
+    def->tooltip = L("Add 4 corner fiducial marks for AI-vision auto-alignment. 1=on, 0=off. "
+                     "Default 0 — operators who scan manually identify bands by Y position.");
+    def->cli_params = "0|1";
+    def->set_default_value(new ConfigOptionInt(0));
 
-    def = this->add("zladder_scale_bar", coBool);
+    def = this->add("zladder_scale_bar", coInt);
     def->label = L("Z-ladder scale bar");
-    def->tooltip = L("Add a 10mm scale bar with 11 ticks for DPI verification. Default ON.");
-    def->set_default_value(new ConfigOptionBool(true));
+    def->tooltip = L("Add a 10mm scale bar with 11 ticks for DPI verification. 1=on, 0=off. "
+                     "Default 0 — DPI verification is a one-time check per scanner install.");
+    def->cli_params = "0|1";
+    def->set_default_value(new ConfigOptionInt(0));
 
-    def = this->add("zladder_id_dots", coBool);
+    def = this->add("zladder_id_dots", coInt);
     def->label = L("Z-ladder per-band ID dots");
     def->tooltip = L("Add 1+2+3+4+5 small dots east of the pad identifying which band a "
-                     "peeled fragment came from. Default OFF — in practice the pad never "
-                     "fragments and the dots just add print time and visual clutter; "
-                     "fiducials + scale bar already identify bands by Y position.");
-    def->set_default_value(new ConfigOptionBool(false));
+                     "peeled fragment came from. 1=on, 0=off. Default 0 — in practice the pad "
+                     "never fragments and the dots just add print time and visual clutter.");
+    def->cli_params = "0|1";
+    def->set_default_value(new ConfigOptionInt(0));
 
     //ORCA: sub-flags for --calibrate-type temp-tower / vol-speed-tower / pa-tower.
     def = this->add("temp_tower_start", coFloat);

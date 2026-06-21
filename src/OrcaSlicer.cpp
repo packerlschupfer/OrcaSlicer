@@ -1598,12 +1598,14 @@ int CLI::run(int argc, char **argv)
                 cli_zladder_params.height_mm = h->value;
             if (ConfigOptionFloat *w = m_config.option<ConfigOptionFloat>("zladder_width"); w)
                 cli_zladder_params.width_mm = w->value;
-            if (ConfigOptionBool  *fb = m_config.option<ConfigOptionBool>("zladder_fiducials"); fb)
-                cli_zladder_params.fiducials = fb->value;
-            if (ConfigOptionBool  *sb = m_config.option<ConfigOptionBool>("zladder_scale_bar"); sb)
-                cli_zladder_params.scale_bar = sb->value;
-            if (ConfigOptionBool  *db = m_config.option<ConfigOptionBool>("zladder_id_dots"); db)
-                cli_zladder_params.id_dots = db->value;
+            //ORCA: coInt instead of coBool so `--zladder-fiducials 0|1` works (the bool
+            //      parser ignores trailing values; --no- prefix is upstream-disabled).
+            if (ConfigOptionInt   *fb = m_config.option<ConfigOptionInt>("zladder_fiducials"); fb)
+                cli_zladder_params.fiducials = (fb->value != 0);
+            if (ConfigOptionInt   *sb = m_config.option<ConfigOptionInt>("zladder_scale_bar"); sb)
+                cli_zladder_params.scale_bar = (sb->value != 0);
+            if (ConfigOptionInt   *db = m_config.option<ConfigOptionInt>("zladder_id_dots"); db)
+                cli_zladder_params.id_dots = (db->value != 0);
         } else {
             // Resolve flow-rate sub-flags
             Slic3r::cli_flowrate_params_for_type(cli_calib_type, cli_flow_params.pass, cli_flow_params.is_linear);

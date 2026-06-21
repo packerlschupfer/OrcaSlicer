@@ -210,11 +210,14 @@ struct CLIZLadderParams {
     double band_height_mm = 15.0;  // banded only: each band's Y extent
     double width_mm = 60.0;        // pad X-width
     double height_mm = 75.0;       // ramp only: total Y-extent of the ramp pad
-    bool   fiducials = true;
-    bool   scale_bar = true;
-    //ORCA: per-band ID dots east of the pad (banded only). Default OFF — slicer-chat
-    //      2026-06-19: the pad never fragments in practice, fiducials+scale-bar already
-    //      identify bands, and the dots just add print time + visual clutter.
+    //ORCA: visual aids all default OFF. Slicer-chat 2026-06-21 (after id_dots flip
+    //      on 06-19): operator uses a flatbed scanner + band Y position to identify
+    //      bands, so fiducials' AI-vision use-case is rare and the scale-bar DPI
+    //      check is one-time per scanner install. id_dots defaulted OFF earlier
+    //      because the pad doesn't fragment in practice. Opt in via the CLI flags
+    //      (now coInt 0/1 in PrintConfig so `--zladder-fiducials 1` works).
+    bool   fiducials = false;
+    bool   scale_bar = false;
     bool   id_dots   = false;
 };
 
