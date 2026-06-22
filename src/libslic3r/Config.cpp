@@ -746,7 +746,11 @@ double ConfigBase::get_abs_value(const t_config_option_key &opt_key, double rati
 {
     // Get stored option value.
     const ConfigOption *raw_opt = this->option(opt_key);
-    assert(raw_opt != nullptr);
+    // Mirror the single-arg overload: a missing option must raise, not segfault. assert() alone is
+    // compiled out under NDEBUG (Release/RelWithDebInfo), which turned a missing key into a null
+    // dereference at raw_opt->type() below.
+    if (raw_opt == nullptr)
+        throw ConfigurationError("ConfigBase::get_abs_value(): \"" + opt_key + "\" is not defined");
     if (raw_opt->type() != coFloatOrPercent)
         throw ConfigurationError("ConfigBase::get_abs_value(): opt_key is not of coFloatOrPercent");
     // Compute absolute value.

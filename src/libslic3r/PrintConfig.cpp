@@ -10645,7 +10645,9 @@ CLIActionsConfigDef::CLIActionsConfigDef()
     def = this->add("calibrate_type", coString);
     def->label = L("Calibration type");
     def->tooltip = L("Run a calibration generator instead of slicing a user-supplied model. "
-                     "One of: flow-yolo-recommended, flow-yolo-perfectionist, flow-pass1, flow-pass2.");
+                     "One of: flow-yolo-recommended, flow-yolo-perfectionist, flow-pass1, flow-pass2, "
+                     "z-offset-pattern, temp-tower, vol-speed-tower, pa-tower, retraction-tower, "
+                     "vfa-tower, z-ladder-banded, z-ladder-ramp.");
     def->cli = "calibrate-type";
     def->cli_params = "name";
     def->set_default_value(new ConfigOptionString(""));
@@ -10833,6 +10835,56 @@ CLITransformConfigDef::CLITransformConfigDef()
     def->tooltip = L("Rotation angle around the Y axis in degrees.");
     def->sidetext = u8"°";	// degrees, don't need translation
     def->set_default_value(new ConfigOptionFloat(0));
+
+    //ORCA: "ground a face to the bed" CLI primitives. Slicer-chat 2026-06-22:
+    //      the GUI's lay-flat / face-pick gizmos had no CLI equivalent, forcing
+    //      operators to round-trip through the GUI to set orientation. These
+    //      operate on the mesh-local normal — robust against prior --rotate-*
+    //      flags being applied first.
+    def = this->add("ground_largest_face", coInt);
+    def->label = L("Ground largest face");
+    def->tooltip = L("Find the largest planar face on the mesh and rotate so it sits "
+                     "on the bed (Z=0). Covers the common 'this part has one obvious "
+                     "orientation' case. 1=on, 0=off. Default 0.");
+    def->cli_params = "0|1";
+    def->set_default_value(new ConfigOptionInt(0));
+
+    def = this->add("lay_flat", coInt);
+    def->label = L("Lay flat");
+    def->tooltip = L("Alias for --ground-largest-face. Matches the GUI's lay-flat "
+                     "terminology. 1=on, 0=off. Default 0.");
+    def->cli_params = "0|1";
+    def->set_default_value(new ConfigOptionInt(0));
+
+    def = this->add("ground_face_normal", coString);
+    def->label = L("Ground face normal");
+    def->tooltip = L("Rotate so the face whose mesh-local normal best matches NX,NY,NZ "
+                     "sits on the bed. Example: --ground-face-normal 0,0,-1 grounds the "
+                     "face already pointing -Z (typically already flat). Use 1,0,0 to "
+                     "stand a part on its +X side. Vector is normalized internally. "
+                     "Direction-only — orientation in space, not affected by mesh centering.");
+    def->cli_params = "NX,NY,NZ";
+    def->set_default_value(new ConfigOptionString(""));
+
+    def = this->add("ground_face_point", coString);
+    def->label = L("Ground face at point");
+    def->tooltip = L("Find the triangle containing the given mesh-local point X,Y,Z "
+                     "and rotate so its face sits on the bed. Useful when multiple "
+                     "faces have similar normals — picking by point disambiguates. "
+                     "IMPORTANT: mesh-local coords are POST-centering — OrcaSlicer "
+                     "centers the loaded mesh on (0,0,0), so the bottom face of an "
+                     "STL whose file-coords are z=[0,20] is at mesh-local z=-10, "
+                     "not z=0. Inspect the gcode header bbox after a no-op slice "
+                     "to confirm the mesh-local range.");
+    def->cli_params = "X,Y,Z";
+    def->set_default_value(new ConfigOptionString(""));
+
+    def = this->add("center_on_bed", coInt);
+    def->label = L("Center on bed");
+    def->tooltip = L("Translate the model so its XY bounding-box center lands at the bed "
+                     "center. Useful after --ground-* operations. 1=on, 0=off. Default 0.");
+    def->cli_params = "0|1";
+    def->set_default_value(new ConfigOptionInt(0));
 
     def = this->add("scale", coFloat);
     def->label = L("Scale");

@@ -2627,8 +2627,12 @@ bool PartPlate::check_outside(int obj_id, int instance_id, BoundingBoxf3* boundi
 		plate_box.min.z() += instance_box.min.z(); // not considering outsize if sinking
 
 	if (instance_box.min.z() < SINKING_Z_THRESHOLD) {
+		//ORCA: m_plater is null in CLI mode (no GUI Plater exists); skip the sinking-
+		//      detection branch in that case. Previously this crashed any CLI invocation
+		//      that rotated a part to extend below Z=0 (--rotate-y 90, --ground-*, etc.).
+		//      Slicer-chat 2026-06-22 hit it via --ground-face-normal 1,0,0.
 		// Orca: For sinking object, we use a more expensive algorithm so part below build plate won't be considered
-		if (plate_box.intersects(instance_box)) {
+		if (m_plater && plate_box.intersects(instance_box)) {
 			// TODO: FIXME: this does not take exclusion area into account
             const BuildVolume build_volume(get_shape(), m_plater->build_volume().printable_height(), m_extruder_areas, m_extruder_heights);
 			const auto state = instance->calc_print_volume_state(build_volume);

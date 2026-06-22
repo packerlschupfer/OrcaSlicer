@@ -11,12 +11,28 @@ namespace Slic3r {
 float CalibPressureAdvance::find_optimal_PA_speed(const DynamicPrintConfig &config, double line_width, double layer_height, int extruder_id, int filament_idx)
 {
     const double general_suggested_min_speed   = 100.0;
-    double       filament_max_volumetric_speed = config.option<ConfigOptionFloats>("filament_max_volumetric_speed")->get_at(filament_idx);
+    // The GUI calls this with preset_bundle->full_config() (every key seeded with its ConfigDef
+    // default), but the headless CLI path (cli_apply_pa_tower) passes a merged config whose optional
+    // keys aren't populated until Print::apply() runs later. Read defensively so a missing key falls
+    // back to its ConfigDef default instead of dereferencing a null option (this was the pa-tower
+    // SIGSEGV: outer_wall_speed absent from the CLI config). GUI behavior is unchanged — its config
+    // always carries these keys, so the fast path returns the real value.
+    auto scalar = [&config](const char *key) -> double {
+        if (const auto *o = config.option<ConfigOptionFloat>(key)) return o->value;
+        const ConfigOptionDef *d = config.def() ? config.def()->get(key) : nullptr;
+        return (d && d->default_value) ? d->get_default_value<ConfigOptionFloat>()->value : 0.0;
+    };
+    auto vector_at = [&config](const char *key, int idx) -> double {
+        if (const auto *o = config.option<ConfigOptionFloats>(key)) return o->get_at(idx);
+        const ConfigOptionDef *d = config.def() ? config.def()->get(key) : nullptr;
+        return (d && d->default_value) ? d->get_default_value<ConfigOptionFloats>()->get_at(idx) : 0.0;
+    };
+    double       filament_max_volumetric_speed = vector_at("filament_max_volumetric_speed", filament_idx);
     // todo multi_extruders:
-    const float  nozzle_diameter               = config.option<ConfigOptionFloats>("nozzle_diameter")->get_at(extruder_id);
+    const float  nozzle_diameter               = vector_at("nozzle_diameter", extruder_id);
     if (line_width <= 0.) line_width = Flow::auto_extrusion_width(frPerimeter, nozzle_diameter);
     Flow         pattern_line = Flow(line_width, layer_height, nozzle_diameter);
-    auto         pa_speed     = std::min(std::max(general_suggested_min_speed, config.option<ConfigOptionFloat>("outer_wall_speed")->value),
+    auto         pa_speed     = std::min(std::max(general_suggested_min_speed, scalar("outer_wall_speed")),
                                          filament_max_volumetric_speed / pattern_line.mm3_per_mm());
 
     return std::floor(pa_speed);
