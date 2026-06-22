@@ -219,15 +219,33 @@ void cli_apply_flowrate_calib(Model &model, DynamicPrintConfig &full_config, con
     //      per-object/per-config work. Symmetric (keeps blocks closest to modifier=0).
     filter_flowrate_blocks(model, params.max_blocks, params.max_modifier);
 
+    //ORCA: defensive null-guards on every option lookup below. Without --datadir, user
+    //      presets that `inherits:` from a system preset resolve with the parent's keys
+    //      missing — flow-yolo then segfaulted derefing the returned nullptr (slicer-chat
+    //      2026-06-22). Each missing-key path now emits a clear error pointing at the
+    //      missing field; the `--datadir` hint covers the common cause.
+    auto missing_field_error = [](const char *field) {
+        BOOST_LOG_TRIVIAL(error)
+            << "cli_apply_flowrate_calib: required config field `" << field
+            << "` is missing from the resolved config. This usually means a preset's "
+               "`inherits` chain didn't resolve — pass `--datadir <orcaslicer-config-dir>` "
+               "so system presets can be found.";
+    };
+
     const ConfigOptionFloats *nozzle_diameter_config = full_config.option<ConfigOptionFloats>("nozzle_diameter");
     if (!nozzle_diameter_config || nozzle_diameter_config->values.empty()) {
-        BOOST_LOG_TRIVIAL(error) << "cli_apply_flowrate_calib: no nozzle_diameter in config";
+        missing_field_error("nozzle_diameter");
         return;
     }
     const double nozzle_diameter = nozzle_diameter_config->values[0];
     const double xyScale         = nozzle_diameter / 0.6;
     const double layer_height    = nozzle_diameter / 2.0;
-    double       first_layer_h   = full_config.option<ConfigOptionFloat>("initial_layer_print_height")->value;
+    const ConfigOptionFloat *first_layer_h_opt = full_config.option<ConfigOptionFloat>("initial_layer_print_height");
+    if (!first_layer_h_opt) {
+        missing_field_error("initial_layer_print_height");
+        return;
+    }
+    double       first_layer_h   = first_layer_h_opt->value;
     first_layer_h                = std::max(first_layer_h, layer_height);
     // ORCA: block Z-extent driven by --flow-height (default 3.0mm). Original 3MF resource is 2mm
     //       (10 layers @ 0.20). zscale formula generalizes: total height = first_layer_h +
@@ -244,9 +262,13 @@ void cli_apply_flowrate_calib(Model &model, DynamicPrintConfig &full_config, con
 
     //ORCA: derive max_infill_speed exactly as the GUI does. cur_flowrate (filament_flow_ratio) and
     //      filament_max_volumetric_speed come from the filament preset slot 0.
-    const double cur_flowrate              = full_config.option<ConfigOptionFloats>("filament_flow_ratio")->get_at(0);
+    const auto *cur_flowrate_opt = full_config.option<ConfigOptionFloats>("filament_flow_ratio");
+    if (!cur_flowrate_opt || cur_flowrate_opt->values.empty()) { missing_field_error("filament_flow_ratio"); return; }
+    const double cur_flowrate              = cur_flowrate_opt->get_at(0);
     const Flow   infill_flow               = Flow(nozzle_diameter * 1.2f, layer_height, nozzle_diameter);
-    const double filament_max_vol_speed    = full_config.option<ConfigOptionFloats>("filament_max_volumetric_speed")->get_at(0);
+    const auto *max_vol_speed_opt = full_config.option<ConfigOptionFloats>("filament_max_volumetric_speed");
+    if (!max_vol_speed_opt || max_vol_speed_opt->values.empty()) { missing_field_error("filament_max_volumetric_speed"); return; }
+    const double filament_max_vol_speed    = max_vol_speed_opt->get_at(0);
     double       max_infill_speed;
     if (params.is_linear) {
         max_infill_speed = filament_max_vol_speed /
@@ -254,8 +276,12 @@ void cli_apply_flowrate_calib(Model &model, DynamicPrintConfig &full_config, con
     } else {
         max_infill_speed = filament_max_vol_speed / (infill_flow.mm3_per_mm() * (params.pass == 1 ? 1.2 : 1));
     }
-    const double internal_solid_speed = std::floor(std::min(full_config.opt_float("internal_solid_infill_speed"), max_infill_speed));
-    const double top_surface_speed    = std::floor(std::min(full_config.opt_float("top_surface_speed"), max_infill_speed));
+    const auto *is_speed_opt = full_config.option<ConfigOptionFloat>("internal_solid_infill_speed");
+    if (!is_speed_opt) { missing_field_error("internal_solid_infill_speed"); return; }
+    const auto *ts_speed_opt = full_config.option<ConfigOptionFloat>("top_surface_speed");
+    if (!ts_speed_opt) { missing_field_error("top_surface_speed"); return; }
+    const double internal_solid_speed = std::floor(std::min(is_speed_opt->value, max_infill_speed));
+    const double top_surface_speed    = std::floor(std::min(ts_speed_opt->value, max_infill_speed));
 
     //ORCA: per-object setters — line-for-line port of the GUI implementation. Order preserved.
     for (ModelObject *mo : model.objects) {
@@ -1265,8 +1291,15 @@ void cli_apply_pa_tower(Model &model, DynamicPrintConfig &full_config, const CLI
     auto &obj_cfg = model.objects[0]->config;
     obj_cfg.set_key_value("alternate_extra_wall", new ConfigOptionBool(false));
 
-    // GUI uses CalibPressureAdvance::find_optimal_PA_speed — reuse it verbatim.
-    const double line_width   = full_config.get_abs_value("line_width", nozzle_diameter);
+    // GUI uses CalibPressureAdvance::find_optimal_PA_speed — reuse it verbatim. The GUI passes
+    // preset_bundle->full_config() (every key seeded with its ConfigDef default), but the CLI's
+    // merged config only carries keys the loaded presets actually set. "line_width" is an optional
+    // coFloatOrPercent that defaults to 0 (=auto) and is therefore omitted by virtually every
+    // process preset, so option("line_width") is null here. The two-arg get_abs_value() does not
+    // null-check (only asserts, compiled out under NDEBUG) and would dereference the null option —
+    // this is the pa-tower SIGSEGV. Resolve defensively: a missing/0 line_width means "auto", which
+    // is exactly what find_optimal_PA_speed() computes when it receives line_width <= 0.
+    const double line_width   = full_config.option("line_width") ? full_config.get_abs_value("line_width", nozzle_diameter) : 0.0;
     const double layer_height = full_config.get_abs_value("layer_height");
     const double wall_speed   = CalibPressureAdvance::find_optimal_PA_speed(full_config, line_width, layer_height, 0, 0);
     obj_cfg.set_key_value("outer_wall_speed", new ConfigOptionFloat(wall_speed));
