@@ -11942,7 +11942,9 @@ CLIActionsConfigDef::CLIActionsConfigDef()
     def = this->add("calibrate_type", coString);
     def->label = L("Calibration type");
     def->tooltip = L("Run a calibration generator instead of slicing a user-supplied model. "
-                     "One of: flow-yolo-recommended, flow-yolo-perfectionist, flow-pass1, flow-pass2.");
+                     "One of: flow-yolo-recommended, flow-yolo-perfectionist, flow-pass1, flow-pass2, "
+                     "z-offset-pattern, temp-tower, vol-speed-tower, pa-tower, retraction-tower, "
+                     "vfa-tower, z-ladder-banded, z-ladder-ramp.");
     def->cli = "calibrate-type";
     def->cli_params = "name";
     def->set_default_value(new ConfigOptionString(""));
