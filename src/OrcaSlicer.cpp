@@ -417,6 +417,20 @@ static PrinterTechnology get_printer_technology(const DynamicConfig &config)
     return(ret);}
 #endif
 
+//ORCA: AI-friendly result.json failure taxonomy. Accumulates structured
+//      {class, ...details} entries during the run; flushed into result.json by
+//      record_exit_reson. Lets AI/CI tooling branch on a stable `class` key
+//      instead of regex-matching stderr or error_string. Reset via
+//      cli_reset_failures at the start of each CLI invocation.
+namespace { nlohmann::json g_cli_failures = nlohmann::json::array(); bool g_cli_strict_mode = false; }
+void cli_record_failure(const std::string &cls, nlohmann::json details = nlohmann::json::object())
+{
+    details["class"] = cls;
+    g_cli_failures.push_back(std::move(details));
+}
+void cli_reset_failures() { g_cli_failures = nlohmann::json::array(); }
+void cli_set_strict_mode(bool s) { g_cli_strict_mode = s; }
+
 void record_exit_reson(std::string outputdir, int code, int plate_id, std::string error_message, sliced_info_t& sliced_info, std::map<std::string, std::string> key_values = std::map<std::string, std::string>())
 {
 #if defined(__linux__) || defined(__LINUX__)
@@ -454,6 +468,10 @@ void record_exit_reson(std::string outputdir, int code, int plate_id, std::strin
         }
         for (auto& iter: key_values)
             j[iter.first] = iter.second;
+
+        //ORCA: AI-friendly structured failure taxonomy + strict-mode marker
+        j["failures"]    = g_cli_failures;
+        j["strict_mode"] = g_cli_strict_mode;
 
         boost::nowide::ofstream c;
         c.open(result_file, std::ios::out | std::ios::trunc);
@@ -3671,15 +3689,20 @@ int CLI::run(int argc, char **argv)
             break;
         }
 
-        //ORCA: --strict — if the calib generator hit a defensive guard (missing
-        //      config field etc., see cli_calib_mark_failed sites in CalibCLI.cpp),
-        //      fail loudly instead of continuing on with a half-prepared model.
-        //      Slicer-chat 2026-06-22 AI-friendly pass #3.
-        if (m_config.opt_bool("strict") && !Slic3r::cli_calib_last_call_succeeded()) {
-            BOOST_LOG_TRIVIAL(error) << "--strict: calibration prep failed (see prior error). "
-                                        "Refusing to slice an incomplete calibration model.";
-            record_exit_reson(outfile_dir, CLI_INVALID_PARAMS, 0, cli_errors[CLI_INVALID_PARAMS], sliced_info);
-            flush_and_exit(CLI_INVALID_PARAMS);
+        //ORCA: record the calib-prep failure in the structured failure taxonomy
+        //      regardless of --strict (so AI sees it in result.json even when
+        //      the slice was allowed to proceed). Under --strict, also exit.
+        if (!Slic3r::cli_calib_last_call_succeeded()) {
+            nlohmann::json details{{"phase", "calib_prep"}};
+            const std::string field = Slic3r::cli_calib_last_failed_field();
+            if (!field.empty()) details["field"] = field;
+            cli_record_failure("missing_field", details);
+            if (m_config.opt_bool("strict")) {
+                BOOST_LOG_TRIVIAL(error) << "--strict: calibration prep failed (see prior error). "
+                                            "Refusing to slice an incomplete calibration model.";
+                record_exit_reson(outfile_dir, CLI_INVALID_PARAMS, 0, cli_errors[CLI_INVALID_PARAMS], sliced_info);
+                flush_and_exit(CLI_INVALID_PARAMS);
+            }
         }
 
         //ORCA: center the calibration model on the bed (matches the GUI's add_model behavior).
@@ -6121,6 +6144,7 @@ int CLI::run(int argc, char **argv)
             no_check = m_config.opt_bool(opt_key);
         }else if(opt_key=="strict"){
             strict_mode = m_config.opt_bool(opt_key);
+            cli_set_strict_mode(strict_mode);
         //} else if (opt_key == "export_gcode" || opt_key == "export_sla" || opt_key == "slice") {
         } else if (opt_key == "normative_check") {
             //already processed before
@@ -6698,8 +6722,16 @@ int CLI::run(int argc, char **argv)
                                        //      that should never ship a subtly broken slice get a loud exit.
                                        if (cli_calib_type != Slic3r::CLICalibType::NoCalib && !strict_mode) {
                                            BOOST_LOG_TRIVIAL(warning) << "plate "<< index+1<< ": ignoring gcode-path conflict — --calibrate-type plates expect overlapping struts: " << conflict_result << std::endl;
+                                           cli_record_failure("gcode_path_conflict_suppressed",
+                                                              { {"plate_id", index+1},
+                                                                {"detail", conflict_result},
+                                                                {"reason", "calibrate-type expects overlapping struts"} });
                                        } else {
                                            BOOST_LOG_TRIVIAL(error) << "plate "<< index+1<< ": found slicing result conflict!"<< std::endl;
+                                           //ORCA: record BEFORE exit so result.json has the structured failure
+                                           cli_record_failure("gcode_path_conflict",
+                                                              { {"plate_id", index+1},
+                                                                {"detail", conflict_result} });
                                            record_exit_reson(outfile_dir, CLI_GCODE_PATH_CONFLICTS, index+1, cli_errors[CLI_GCODE_PATH_CONFLICTS], sliced_info);
                                            flush_and_exit(CLI_GCODE_PATH_CONFLICTS);
                                        }
@@ -6717,6 +6749,9 @@ int CLI::run(int argc, char **argv)
 
                                                 if (status.warning_level == PrintStateBase::WarningLevel::NON_CRITICAL) {
                                                     BOOST_LOG_TRIVIAL(warning) << "plate "<< index+1<< ": found NON_CRITICAL slicing warnings: "<<status.text <<std::endl;
+                                                    cli_record_failure("slicing_warning_non_critical",
+                                                                       { {"plate_id", index+1},
+                                                                         {"text", status.text} });
                                                     //ORCA: --strict — fail loudly on NON_CRITICAL too, so a
                                                     //      CI/AI pipeline doesn't ship a "warning OK" slice.
                                                     if (strict_mode) {

@@ -234,9 +234,14 @@ bool cli_zladder_get_calib_params(CLICalibType type, const CLIZLadderParams &par
 // defensive guard (missing config field, empty model, etc.)? The dispatcher
 // (OrcaSlicer.cpp) checks this after each cli_apply_* and exits non-zero when
 // --strict is on. Reset to "ok" automatically at the top of each cli_apply_*.
-bool cli_calib_last_call_succeeded();
-void cli_calib_reset_status();
-void cli_calib_mark_failed();
+// The "failed_field" accessor exposes WHICH field was missing so the dispatcher
+// can record a structured {class:"missing_field",field:"..."} failure entry
+// for the result.json failure taxonomy.
+bool        cli_calib_last_call_succeeded();
+void        cli_calib_reset_status();
+void        cli_calib_mark_failed();
+std::string cli_calib_last_failed_field();
+void        cli_calib_set_failed_field(const char *field);
 
 // Emit a JSON enumeration of every --calibrate-type value the CLI supports —
 // name, category (flow-rate / tower / z-offset / pattern), description,

@@ -182,11 +182,14 @@ static void filter_flowrate_blocks(Model &model, int max_blocks, double max_modi
 //      failed. OrcaSlicer.cpp checks after each calib dispatch and exits
 //      non-zero when --strict is on.
 namespace {
-bool g_last_calib_succeeded = true;
+bool        g_last_calib_succeeded = true;
+std::string g_last_failed_field;
 }
-bool cli_calib_last_call_succeeded() { return g_last_calib_succeeded; }
-void cli_calib_reset_status()        { g_last_calib_succeeded = true; }
-void cli_calib_mark_failed()         { g_last_calib_succeeded = false; }
+bool        cli_calib_last_call_succeeded() { return g_last_calib_succeeded; }
+void        cli_calib_reset_status()        { g_last_calib_succeeded = true; g_last_failed_field.clear(); }
+void        cli_calib_mark_failed()         { g_last_calib_succeeded = false; }
+std::string cli_calib_last_failed_field()   { return g_last_failed_field; }
+void        cli_calib_set_failed_field(const char *field) { if (field) g_last_failed_field = field; }
 
 void cli_apply_flowrate_calib(Model &model, DynamicPrintConfig &full_config, const CLIFlowRateParams &params)
 {
@@ -244,6 +247,7 @@ void cli_apply_flowrate_calib(Model &model, DynamicPrintConfig &full_config, con
                "`inherits` chain didn't resolve — pass `--datadir <orcaslicer-config-dir>` "
                "so system presets can be found.";
         cli_calib_mark_failed();
+        cli_calib_set_failed_field(field);
     };
 
     const ConfigOptionFloats *nozzle_diameter_config = full_config.option<ConfigOptionFloats>("nozzle_diameter");
