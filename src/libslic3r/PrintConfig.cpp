@@ -10717,6 +10717,19 @@ CLIActionsConfigDef::CLIActionsConfigDef()
     def->tooltip = L("Output the model's information.");
     def->set_default_value(new ConfigOptionBool(false));
 
+    //ORCA: --inspect-mesh — print structured JSON summary of the model to stdout
+    //      and exit. Lets AI/CLI tooling plan orientation/transform strategy
+    //      without slicing. Registered as an action (parallel to --info) so it
+    //      satisfies the "needs an action" check and bypasses the GUI fallback.
+    def = this->add("inspect_mesh", coBool);
+    def->label = L("Inspect mesh (JSON to stdout)");
+    def->tooltip = L("Print a structured JSON summary of the loaded model(s) — per-object "
+                     "mesh-local bbox + centroid, world bbox, and top-N largest planar-face "
+                     "clusters with their normals, areas, and ready-to-use "
+                     "--ground-face-normal commands — then exit. Lets AI/CLI tooling plan "
+                     "an orientation without slicing.");
+    def->set_default_value(new ConfigOptionBool(false));
+
     def = this->add("export_settings", coString);
     def->label = L("Export Settings");
     def->tooltip = L("Export settings to a file.");

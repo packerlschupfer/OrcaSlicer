@@ -18,12 +18,23 @@
 #define slic3r_MeshOrient_hpp_
 
 #include "libslic3r/Point.hpp"
+#include <iosfwd>
 #include <string>
 
 namespace Slic3r {
 class Model;
 
 namespace MeshOrient {
+
+// Emit a structured JSON inspection of `model` to `out` — per-object
+// mesh-local bbox + centroid, top-N largest planar-face clusters with
+// their normals, areas, and ready-to-use --ground-face-normal commands.
+// Lets AI/CLI tooling plan an orientation without slicing first. The
+// reported coords are mesh-local (post-OrcaSlicer-centering), matching
+// the frame used by --ground-face-point.
+void inspect_to_json(const Model &model, const std::string &source_path,
+                     std::ostream &out, int top_n_clusters = 8);
+
 
 // Find the largest planar face (cluster of coplanar triangles by mesh-local
 // normal) across all volumes of all objects in `model`, then rotate every
