@@ -238,6 +238,11 @@ bool cli_calib_last_call_succeeded();
 void cli_calib_reset_status();
 void cli_calib_mark_failed();
 
+// Emit a JSON enumeration of every --calibrate-type value the CLI supports —
+// name, category (flow-rate / tower / z-offset / pattern), description,
+// relevant flags, example command. Backs the --list-calibrate-types action.
+void cli_emit_calib_types_json(std::ostream &out);
+
 }
 
 #endif

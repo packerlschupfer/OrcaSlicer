@@ -6044,6 +6044,12 @@ int CLI::run(int argc, char **argv)
                 Slic3r::MeshOrient::inspect_to_json(model, source, boost::nowide::cout);
             }
             boost::nowide::cout.flush();
+        } else if (opt_key == "list_calibrate_types") {
+            //ORCA: --list-calibrate-types — emit JSON enumeration of every
+            //      --calibrate-type the CLI accepts. Static table; doesn't need
+            //      input files or presets, so it can run as the only action.
+            Slic3r::cli_emit_calib_types_json(boost::nowide::cout);
+            boost::nowide::cout.flush();
         } else if (opt_key == "uptodate") {
             //already processed before
         } else if (opt_key == "min_save") {

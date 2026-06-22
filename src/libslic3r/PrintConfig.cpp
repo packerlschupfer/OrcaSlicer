@@ -10744,6 +10744,20 @@ CLIActionsConfigDef::CLIActionsConfigDef()
                      "an orientation without slicing.");
     def->set_default_value(new ConfigOptionBool(false));
 
+    //ORCA: --list-calibrate-types — emit JSON enumeration of every --calibrate-type
+    //      value the CLI accepts, with category, description, relevant flags,
+    //      and a ready-to-use example command. Closes the brief's "help text out
+    //      of sync with reality" gap (operator/AI no longer greps tooltip prose
+    //      to know what's accepted). Input files NOT required; the dispatch path
+    //      builds the JSON purely from the static type table.
+    def = this->add("list_calibrate_types", coBool);
+    def->label = L("List calibrate-types (JSON to stdout)");
+    def->tooltip = L("Print a JSON enumeration of every --calibrate-type value the CLI "
+                     "accepts, with category, description, relevant flags, and an example "
+                     "command — then exit. AI/CLI tooling can use this instead of grepping "
+                     "the --calibrate-type tooltip.");
+    def->set_default_value(new ConfigOptionBool(false));
+
     def = this->add("export_settings", coString);
     def->label = L("Export Settings");
     def->tooltip = L("Export settings to a file.");

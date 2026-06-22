@@ -2189,4 +2189,117 @@ void cli_build_zladder(Model &model, DynamicPrintConfig &full_config,
         % (is_banded ? "banded" : "ramp") % pad_w % pad_h % params.steps % params.start_mm % params.end_mm;
 }
 
+//ORCA: --list-calibrate-types JSON emitter. Hand-formatted (same approach as
+//      MeshOrient::inspect_to_json and the calib sidecar emitters — small,
+//      flat, no JSON-library dependency). The table is static + intentionally
+//      lives next to the parser (cli_calib_type_from_string above) so adding
+//      a new --calibrate-type means touching exactly this file in both places.
+void cli_emit_calib_types_json(std::ostream &out)
+{
+    struct Entry {
+        const char  *name;
+        const char  *category;     // "flow-rate" / "tower" / "z-offset" / "pattern"
+        const char  *description;
+        const char  *flags;        // space-separated; AI splits on " " to enumerate
+        const char  *example;
+    };
+    static const Entry table[] = {
+        { "flow-yolo-recommended", "flow-rate",
+          "OrcaSlicer 'New YOLO' linear flow-rate calibration: 11 blocks across +/-0.05 around the filament's current flow_ratio. Use this as the per-spool refinement after flow-yolo-coarse.",
+          "--flow-pattern --flow-brim --flow-brim-width --flow-brim-gap --flow-height",
+          "--calibrate-type flow-yolo-recommended --flow-height 3.0" },
+        { "flow-yolo-perfectionist", "flow-rate",
+          "Finer-grained YOLO: 16 blocks across the same +/-0.05 range. Run after flow-yolo-recommended if you want sub-percent flow precision.",
+          "--flow-pattern --flow-brim --flow-brim-width --flow-brim-gap --flow-height",
+          "--calibrate-type flow-yolo-perfectionist" },
+        { "flow-yolo-coarse", "flow-rate",
+          "Wide-range procedural variant: 5 blocks at +/-0.10 and +/-0.05 around the current flow_ratio. Use this once per filament+printer when the seed is unknown; then refine with flow-yolo-recommended.",
+          "--flow-pattern --flow-brim --flow-brim-width --flow-brim-gap --flow-height",
+          "--calibrate-type flow-yolo-coarse" },
+        { "flow-pass1", "flow-rate",
+          "Non-linear flow-rate pass 1 (pre-YOLO style, modifier ranges +/-0.20 in steps of 0.04).",
+          "--flow-pattern --flow-brim --flow-brim-width --flow-brim-gap --flow-height",
+          "--calibrate-type flow-pass1" },
+        { "flow-pass2", "flow-rate",
+          "Non-linear flow-rate pass 2 (refinement, modifier range +/-0.05 in steps of 0.01).",
+          "--flow-pattern --flow-brim --flow-brim-width --flow-brim-gap --flow-height",
+          "--calibrate-type flow-pass2" },
+        { "temp-tower", "tower",
+          "Temperature tower — N stacked blocks, each printed at a different nozzle temperature. Operator inspects which block looks best.",
+          "--temp-tower-start --temp-tower-end --temp-tower-step --calib-tower-blocks",
+          "--calibrate-type temp-tower --temp-tower-start 220 --temp-tower-end 180" },
+        { "vol-speed-tower", "tower",
+          "Volumetric speed tower — increases extruder volumetric flow rate per layer to find the printer's max sustained speed.",
+          "--vol-speed-start --vol-speed-end --vol-speed-step",
+          "--calibrate-type vol-speed-tower" },
+        { "pa-tower", "tower",
+          "Pressure Advance tower — emits per-layer SET_PRESSURE_ADVANCE commands. Operator reads which layer (= which PA value) has cleanest corner.",
+          "--pa-tower-start --pa-tower-end --pa-tower-step",
+          "--calibrate-type pa-tower --pa-tower-start 0 --pa-tower-end 0.08" },
+        { "retraction-tower", "tower",
+          "Retraction-length tower — varies retraction distance per block to find the minimum that prevents stringing.",
+          "--retract-tower-start --retract-tower-end --retract-tower-step",
+          "--calibrate-type retraction-tower" },
+        { "vfa-tower", "tower",
+          "Vertical Fine Artifacts tower — varies speed per layer to surface VFA bands. For diagnosing input-shaper / motor-resonance issues.",
+          "--vfa-start --vfa-end --vfa-step",
+          "--calibrate-type vfa-tower" },
+        { "z-offset-pattern", "pattern",
+          "Z-offset calibration pattern with constellation of small islands plus a structural grid mesh; bands map to absolute Live-Z values. Operator picks the cleanest island.",
+          "--zcal-grid --zcal-grid-pitch --zcal-fiducials --zcal-scale-bar --zcal-fiducial-ids --zcal-zone-ids --zcal-zone-size",
+          "--calibrate-type z-offset-pattern" },
+        { "z-ladder-banded", "z-offset",
+          "Z-ladder banded — single concentric-fill pad split into N horizontal bands; each band uses SET_GCODE_OFFSET to test a different Z. Bands identified by Y position. Visual aids (fiducials/scale-bar/id-dots) default OFF.",
+          "--zladder-start --zladder-end --zladder-steps --zladder-band-height --zladder-width --zladder-fiducials --zladder-scale-bar --zladder-id-dots",
+          "--calibrate-type z-ladder-banded --zladder-start -0.025 --zladder-end 0.025 --zladder-steps 5" },
+        { "z-ladder-ramp", "z-offset",
+          "Z-ladder ramp — same pad as banded but Z-adjust is interpolated continuously across Y. For pinpoint refinement after a banded pass got you close.",
+          "--zladder-start --zladder-end --zladder-width --zladder-height --zladder-fiducials --zladder-scale-bar",
+          "--calibrate-type z-ladder-ramp --zladder-start -0.01 --zladder-end +0.01" },
+    };
+
+    auto jstr = [](const std::string &s) -> std::string {
+        std::string out;
+        out.reserve(s.size() + 2);
+        out += '"';
+        for (char c : s) {
+            if (c == '"' || c == '\\') out += '\\';
+            out += c;
+        }
+        out += '"';
+        return out;
+    };
+    auto jflags = [&jstr](const std::string &space_sep) -> std::string {
+        std::string out = "[";
+        size_t i = 0;
+        while (i < space_sep.size()) {
+            size_t j = space_sep.find(' ', i);
+            if (j == std::string::npos) j = space_sep.size();
+            if (j > i) {
+                if (out.size() > 1) out += ", ";
+                out += jstr(space_sep.substr(i, j - i));
+            }
+            i = j + 1;
+        }
+        out += "]";
+        return out;
+    };
+
+    out << "{\n";
+    out << "  " << jstr("calibrate_types") << ": [\n";
+    const size_t n = sizeof(table) / sizeof(table[0]);
+    for (size_t i = 0; i < n; ++i) {
+        const Entry &e = table[i];
+        out << "    {\n";
+        out << "      " << jstr("name")           << ": " << jstr(e.name)        << ",\n";
+        out << "      " << jstr("category")       << ": " << jstr(e.category)    << ",\n";
+        out << "      " << jstr("description")    << ": " << jstr(e.description) << ",\n";
+        out << "      " << jstr("relevant_flags") << ": " << jflags(e.flags)     << ",\n";
+        out << "      " << jstr("example")        << ": " << jstr(e.example)     << "\n";
+        out << "    }" << (i + 1 < n ? "," : "") << "\n";
+    }
+    out << "  ]\n";
+    out << "}\n";
+}
+
 }
