@@ -230,6 +230,11 @@ void cli_build_zladder(Model &model, DynamicPrintConfig &full_config,
 bool cli_zladder_get_calib_params(CLICalibType type, const CLIZLadderParams &params,
                                   const DynamicPrintConfig &full_config, Calib_Params &out);
 
+// Emit a JSON enumeration of every --calibrate-type value the CLI supports —
+// name, category (flow-rate / tower / z-offset / pattern), description,
+// relevant flags, example command. Backs the --list-calibrate-types action.
+void cli_emit_calib_types_json(std::ostream &out);
+
 }
 
 #endif
