@@ -6399,6 +6399,12 @@ int CLI::run(int argc, char **argv)
             record_exit_reson(outfile_dir, CLI_SUCCESS, plate_to_slice, cli_errors[CLI_SUCCESS], sliced_info);
             boost::nowide::cerr.flush();
             return CLI_SUCCESS;
+        } else if (opt_key == "list_calibrate_types") {
+            //ORCA: --list-calibrate-types — emit JSON enumeration of every
+            //      --calibrate-type the CLI accepts. Static table; doesn't need
+            //      input files or presets, so it can run as the only action.
+            Slic3r::cli_emit_calib_types_json(boost::nowide::cout);
+            boost::nowide::cout.flush();
         } else if (opt_key == "uptodate") {
             //already processed before
         } else if (opt_key == "min_save") {
