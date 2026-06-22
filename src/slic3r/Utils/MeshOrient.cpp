@@ -83,7 +83,26 @@ void apply_ground_rotation(Model &model, const Vec3d &target_normal_mesh)
                                          * t.get_matrix_no_offset();
             inst->set_transformation(Geometry::Transformation(new_matrix));
         }
-        mo->ensure_on_bed();
+        //ORCA: lift each instance so its grounded face sits exactly at Z=0.
+        //      ModelObject::ensure_on_bed() is a no-op for CLI-loaded instances
+        //      (it skips any instance whose auto_drop flag is false, and CLI
+        //      loaders default that to false). Slicer-chat 2026-06-22 hit this:
+        //      after Quaterniond rotation the grounded face landed at z≈-1e-9
+        //      due to FP, the slicer then rejected the model with the cryptic
+        //      "No layers were detected" error. Apply the lift directly: per
+        //      instance, compute its world-coord bbox min.z and shift the
+        //      offset by -min.z (zero if already on or above bed).
+        for (size_t i = 0; i < mo->instances.size(); ++i) {
+            ModelInstance *inst = mo->instances[i];
+            if (!inst) continue;
+            const BoundingBoxf3 ib = mo->instance_bounding_box(i, false);
+            const double min_z = ib.min.z();
+            if (min_z != 0.0) {                          // covers below AND above
+                Vec3d o = inst->get_offset();
+                o.z() -= min_z;
+                inst->set_offset(o);
+            }
+        }
     }
 }
 
