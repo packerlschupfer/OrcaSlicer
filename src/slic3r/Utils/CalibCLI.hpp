@@ -230,6 +230,14 @@ void cli_build_zladder(Model &model, DynamicPrintConfig &full_config,
 bool cli_zladder_get_calib_params(CLICalibType type, const CLIZLadderParams &params,
                                   const DynamicPrintConfig &full_config, Calib_Params &out);
 
+// Strict-mode status: did the last cli_apply_*_calib call return early via a
+// defensive guard (missing config field, empty model, etc.)? The dispatcher
+// (OrcaSlicer.cpp) checks this after each cli_apply_* and exits non-zero when
+// --strict is on. Reset to "ok" automatically at the top of each cli_apply_*.
+bool cli_calib_last_call_succeeded();
+void cli_calib_reset_status();
+void cli_calib_mark_failed();
+
 }
 
 #endif

@@ -10696,6 +10696,20 @@ CLIActionsConfigDef::CLIActionsConfigDef()
     def->tooltip = L("Do not run any validity checks, such as G-code path conflicts check.");
     def->set_default_value(new ConfigOptionBool(false));
 
+    //ORCA: --strict — opposite of --no-check. Re-elevates warnings that today
+    //      get silently logged into non-zero exits, so AI/CI scripts don't
+    //      "succeed" on subtly broken outputs. Specifically: calibrate-type
+    //      gcode-path conflicts (today silenced for calibration), NON_CRITICAL
+    //      slicing warnings (today only logged), and CLI calibration prep that
+    //      fails defensively (today logs error + returns 0).
+    def = this->add("strict", coBool);
+    def->label = L("Strict mode");
+    def->tooltip = L("Fail loudly (exit non-zero) on any warning that today gets silently "
+                     "logged: calibrate-type path conflicts, NON_CRITICAL slicing warnings, "
+                     "and CLI calibration prep that fell back to a default. Use this in "
+                     "CI / scripted pipelines that should never ship a subtly broken slice.");
+    def->set_default_value(new ConfigOptionBool(false));
+
     def = this->add("normative_check", coBool);
     def->label = L("Normative check");
     def->tooltip = L("Check the normative items.");

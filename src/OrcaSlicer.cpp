@@ -3671,6 +3671,17 @@ int CLI::run(int argc, char **argv)
             break;
         }
 
+        //ORCA: --strict — if the calib generator hit a defensive guard (missing
+        //      config field etc., see cli_calib_mark_failed sites in CalibCLI.cpp),
+        //      fail loudly instead of continuing on with a half-prepared model.
+        //      Slicer-chat 2026-06-22 AI-friendly pass #3.
+        if (m_config.opt_bool("strict") && !Slic3r::cli_calib_last_call_succeeded()) {
+            BOOST_LOG_TRIVIAL(error) << "--strict: calibration prep failed (see prior error). "
+                                        "Refusing to slice an incomplete calibration model.";
+            record_exit_reson(outfile_dir, CLI_INVALID_PARAMS, 0, cli_errors[CLI_INVALID_PARAMS], sliced_info);
+            flush_and_exit(CLI_INVALID_PARAMS);
+        }
+
         //ORCA: center the calibration model on the bed (matches the GUI's add_model behavior).
         //      Compute the bed center from current_printable_area (loaded earlier), then translate
         //      every object's instance offset so that the combined bounding box centroid lands at
@@ -5965,6 +5976,7 @@ int CLI::run(int argc, char **argv)
     // loop through action options
     bool export_to_3mf = false, load_slicedata = false, export_slicedata = false, export_slicedata_error = false;
     bool no_check = false;
+    bool strict_mode = false;   //ORCA: --strict — see PrintConfig.cpp comment
     std::string export_3mf_file, load_slice_data_dir, export_slice_data_dir, export_stls_dir;
     std::vector<ThumbnailData*> calibration_thumbnails;
     std::vector<int> plate_object_count(partplate_list.get_plate_count(), 0);
@@ -6072,6 +6084,8 @@ int CLI::run(int argc, char **argv)
             export_3mf_file = m_config.opt_string(opt_key);
         }else if(opt_key=="no_check"){
             no_check = m_config.opt_bool(opt_key);
+        }else if(opt_key=="strict"){
+            strict_mode = m_config.opt_bool(opt_key);
         //} else if (opt_key == "export_gcode" || opt_key == "export_sla" || opt_key == "slice") {
         } else if (opt_key == "normative_check") {
             //already processed before
@@ -6644,8 +6658,10 @@ int CLI::run(int argc, char **argv)
                                        //      overlapping perimeter zones (struts touching frame / island
                                        //      perimeters) so the print peels off the bed as one connected
                                        //      mesh. Demote the conflict to a warning for calibration runs
-                                       //      so the slice succeeds.
-                                       if (cli_calib_type != Slic3r::CLICalibType::NoCalib) {
+                                       //      so the slice succeeds. --strict (slicer-chat 2026-06-22
+                                       //      AI-friendly pass #3) re-elevates this so CI/scripted pipelines
+                                       //      that should never ship a subtly broken slice get a loud exit.
+                                       if (cli_calib_type != Slic3r::CLICalibType::NoCalib && !strict_mode) {
                                            BOOST_LOG_TRIVIAL(warning) << "plate "<< index+1<< ": ignoring gcode-path conflict — --calibrate-type plates expect overlapping struts: " << conflict_result << std::endl;
                                        } else {
                                            BOOST_LOG_TRIVIAL(error) << "plate "<< index+1<< ": found slicing result conflict!"<< std::endl;
@@ -6666,6 +6682,13 @@ int CLI::run(int argc, char **argv)
 
                                                 if (status.warning_level == PrintStateBase::WarningLevel::NON_CRITICAL) {
                                                     BOOST_LOG_TRIVIAL(warning) << "plate "<< index+1<< ": found NON_CRITICAL slicing warnings: "<<status.text <<std::endl;
+                                                    //ORCA: --strict — fail loudly on NON_CRITICAL too, so a
+                                                    //      CI/AI pipeline doesn't ship a "warning OK" slice.
+                                                    if (strict_mode) {
+                                                        sliced_info.sliced_plates.push_back(sliced_plate_info);
+                                                        record_exit_reson(outfile_dir, CLI_SLICING_ERROR, index+1, cli_errors[CLI_SLICING_ERROR], sliced_info);
+                                                        flush_and_exit(CLI_SLICING_ERROR);
+                                                    }
                                                 }
                                                 else {
                                                     BOOST_LOG_TRIVIAL(warning) << boost::format("plate %1%: found slicing warnings: %2%, no_check=%3%")%(index+1) %status.text %no_check;
