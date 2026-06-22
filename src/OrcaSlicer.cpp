@@ -6050,6 +6050,35 @@ int CLI::run(int argc, char **argv)
             //      input files or presets, so it can run as the only action.
             Slic3r::cli_emit_calib_types_json(boost::nowide::cout);
             boost::nowide::cout.flush();
+        } else if (opt_key == "inspect_config") {
+            //ORCA: --inspect-config — emit the fully-resolved effective config
+            //      as JSON. Runs in the actions loop AFTER --load-settings /
+            //      --load-filaments / --datadir have merged everything, so the
+            //      output reflects exactly what would be sliced. Catches preset-
+            //      inheritance failures before the slice cycle.
+            nlohmann::json j;
+            j["source_presets"]["load_settings"]  = nlohmann::json(load_configs);
+            j["source_presets"]["load_filaments"] = nlohmann::json(load_filaments);
+            j["source_presets"]["datadir"]        = m_config.opt_string("datadir");
+            j["config"] = nlohmann::json::object();
+            int n_scalar = 0, n_vector = 0;
+            for (const std::string &key : m_print_config.keys()) {
+                const ConfigOption *opt = m_print_config.option(key);
+                if (!opt) continue;
+                if (opt->is_scalar()) {
+                    j["config"][key] = opt->serialize();
+                    ++n_scalar;
+                } else {
+                    const ConfigOptionVectorBase *vec = static_cast<const ConfigOptionVectorBase*>(opt);
+                    j["config"][key] = vec->vserialize();
+                    ++n_vector;
+                }
+            }
+            j["summary"]["total_keys"]  = n_scalar + n_vector;
+            j["summary"]["scalar_keys"] = n_scalar;
+            j["summary"]["vector_keys"] = n_vector;
+            boost::nowide::cout << j.dump(2) << std::endl;
+            boost::nowide::cout.flush();
         } else if (opt_key == "uptodate") {
             //already processed before
         } else if (opt_key == "min_save") {

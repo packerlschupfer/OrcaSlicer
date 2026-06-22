@@ -10758,6 +10758,22 @@ CLIActionsConfigDef::CLIActionsConfigDef()
                      "the --calibrate-type tooltip.");
     def->set_default_value(new ConfigOptionBool(false));
 
+    //ORCA: --inspect-config — emit the fully-resolved effective config as JSON
+    //      after --load-settings / --load-filaments / --datadir have merged
+    //      everything. Lets AI/operator verify what's actually about to be
+    //      sliced before burning a slice cycle. The gcode header has the same
+    //      info but only after a successful slice — this catches the preset-
+    //      inheritance class of bug that we hit several times today (e.g. the
+    //      `gyroid` sparse_infill_pattern flow-yolo header surprise).
+    def = this->add("inspect_config", coBool);
+    def->label = L("Inspect effective config (JSON to stdout)");
+    def->tooltip = L("Print the fully-resolved effective print config as JSON to stdout — "
+                     "the same merged values that --slice would feed into the slicer — then "
+                     "exit. Includes source_presets (the paths that were loaded), config "
+                     "(every resolved key/value), and summary (key counts). Lets AI/operator "
+                     "verify resolution succeeded before burning a slice cycle.");
+    def->set_default_value(new ConfigOptionBool(false));
+
     def = this->add("export_settings", coString);
     def->label = L("Export Settings");
     def->tooltip = L("Export settings to a file.");
