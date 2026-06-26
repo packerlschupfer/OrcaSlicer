@@ -1,0 +1,831 @@
+orcaslicer-dev (2.4.0~dev-2026.06.26-3) UNRELEASED; urgency=medium
+
+  * GUI painter tools: actual icon assets for LINE / RECTANGLE / GRID.
+    The -2 build shipped these tools as text-button wchar_t identifiers;
+    this build adds 6 SVG icon files (3 tools × light/dark) matching the
+    existing 16x16 painter-icon convention (stroke #54545a light / #fff
+    dark, teal #009688 accent).
+
+    Icon designs:
+      LINE      diagonal stroke with two endpoint anchor dots
+      RECTANGLE outlined box with two opposite-corner anchor dots,
+                translucent teal fill
+      GRID      outlined box with a 3x2 dot pattern inside
+
+    Wiring added in deps_src/imgui/imconfig.h (3 new wchar_t Dark
+    constants alongside the existing Light ones) and ImGuiWrapper.cpp
+    (6 new icon-to-filename map entries). Each gizmo's dark-mode icon
+    array now uses the Dark variants.
+
+orcaslicer-dev (2.4.0~dev-2026.06.26-2) UNRELEASED; urgency=medium
+
+  * GUI painter tools: add LINE, RECTANGLE, GRID. Operator asked for
+    a way to paint a straight support line; while we were in there,
+    added two more two-click shape tools that share the same state
+    machine.
+
+    All three live in the painter tool row of the FDM Supports, Seam,
+    and MMU Color gizmos. Their button identifiers are wchar_t
+    constants with no icon images registered upstream — they appear
+    as plain-text buttons. Adding proper icon assets is a follow-up.
+
+    - LINE: two-click swept stroke. Uses the existing
+      TriangleSelector::DoublePointCursor machinery that already
+      backs drag-strokes (between adjacent mouse-move frames). First
+      click stores the mesh-local anchor, second click paints A→B at
+      the cursor-radius width. Right-click 2nd click erases. Switching
+      to another tool cancels a pending anchor.
+
+    - RECTANGLE: two-click screen-space box. On the second click,
+      samples the box at 8-px intervals, raycasts each sample point,
+      and splats a CIRCLE-cursor paint at every hit. Effectively
+      "paint everything visible inside this rectangle."
+
+    - GRID: same two-click box as RECTANGLE plus an operator-controlled
+      "Grid spacing (px)" slider (default 24, range 4-200). Coarser
+      sampling produces a regular dot pattern instead of a fill —
+      useful for sparse-pattern support placement on broad overhangs.
+
+    Shared infrastructure: m_line_pending / m_rect_pending state
+    machines in GLGizmoPainterBase, RECTANGLE/GRID dispatch in the
+    LeftDown/RightDown handler, tool_changed cancel hooks in each
+    of the 3 gizmos. Status-text hint in each tool's panel shows
+    whether the operator is on the 1st or 2nd click.
+
+    Skipped for MVP (low-priority follow-ups):
+    - 3D ghost-line preview from LINE anchor to cursor
+    - Screen-space rubber-band outline for RECTANGLE/GRID while pending
+    - Icon image assets (currently text-button identifiers)
+
+orcaslicer-dev (2.4.0~dev-2026.06.26-1) UNRELEASED; urgency=medium
+
+  * GUI painter section-view: add "Horizontal cut" checkbox + fix the
+    upstream camera-direction-locked clip plane (slicer-chat 2026-06-26).
+
+    Two related fixes to the clip-plane slider in the FDM Supports, Seam,
+    and MMU Color painters:
+
+    1. New "Horizontal cut" checkbox below the clip slider. When ON, the
+       clip-plane normal is forced to world (0,0,1) so the cut stays
+       horizontal regardless of camera angle — perfect for hiding the
+       baseplate while orbiting the view to paint the underside. Default
+       OFF preserves the upstream camera-direction-relative behavior.
+
+    2. Cheap fix for the upstream "first-drag freezes the cut angle"
+       bug. The slider call sites previously passed keep_normal=true,
+       which locked the clip normal to whatever camera direction was
+       captured on the very first slider interaction. Even after the
+       operator rotated the view 90 degrees, the cut stayed at the old
+       angle (looked like it was bound to the object — see operator's
+       screenshot of the rotated cam mount). Switching to
+       keep_normal=false means every slider tick re-captures from the
+       current camera, so nudging the slider after orbiting refreshes
+       the cut to the new view. Live per-frame camera tracking is a
+       potential follow-up; the cheap fix already solves the symptom.
+
+    No upstream code change to the ObjectClipper or set_position_by_ratio
+    signatures — the vertical_normal=true mode existed in the function
+    already (added by BBS) but no caller was wired to it. This commit
+    wires up that mode + flips the existing keep_normal arg at the 3
+    painter call sites.
+
+orcaslicer-dev (2.4.0~dev-2026.06.22-6) UNRELEASED; urgency=medium
+
+  * CLI result.json: structured failure taxonomy + strict_mode marker.
+    AI-friendly pass item #3 of 3.
+
+    result.json now includes:
+      - "failures": [{class, ...details}]  stable taxonomy the AI can
+        branch on without regex-matching error_string
+      - "strict_mode": bool                was the run --strict?
+
+    Wired classes today:
+      gcode_path_conflict_suppressed:  soft-fail, calibrate-type plates
+                                       that overlap by design
+      gcode_path_conflict:             hard-fail (exit 155), recorded
+                                       before flush_and_exit so AI gets
+                                       the structured detail on the
+                                       non-zero path
+      missing_field:                   calib-prep defensive guards
+                                       (cli_apply_flowrate_calib + ...),
+                                       always recorded; --strict also
+                                       exits CLI_INVALID_PARAMS. Includes
+                                       phase + field name.
+      slicing_warning_non_critical:    NON_CRITICAL warnings, recorded
+                                       even on successful slices
+
+    Verified on z-offset-pattern:
+      no --strict:   exit 0,   failures=[suppressed]
+      with --strict: exit 155, failures=[conflict] (bug-fix: was empty)
+      clean slice:   exit 0,   failures=[]
+
+orcaslicer-dev (2.4.0~dev-2026.06.22-5) UNRELEASED; urgency=medium
+
+  * CLI: --inspect-config — dump fully-resolved effective config as
+    JSON to stdout, exit 0. AI-friendly pass extension #2.
+
+    Surfaces the same merged values that would feed into --slice, but
+    BEFORE burning a slice cycle. Output: source_presets (the raw
+    --load-settings/--load-filaments/--datadir paths), config (every
+    resolved key/value of m_print_config, ~600 entries), summary
+    (key counts).
+
+    Catches the preset-inheritance class of bug that bit us several
+    times today (the gyroid-in-the-gcode-header surprise where the
+    user preset value wasn't actually overridden as expected). Now
+    the AI can verify resolution succeeded up-front instead of
+    finding out via the gcode header after a 30s slice.
+
+    Runs after preset loading AND after any --calibrate-type
+    overrides, so --inspect-config --calibrate-type flow-yolo-...
+    shows the post-YOLO-override config — verifies the calib
+    generator did its job.
+
+    Sanity: with Klipper Cube Test + ANYCUBIC PLA HS = 658 keys
+    surfaces user preset values; no presets = 611 default keys.
+
+orcaslicer-dev (2.4.0~dev-2026.06.22-4) UNRELEASED; urgency=medium
+
+  * CLI: --list-calibrate-types — zero-input JSON action that prints
+    every --calibrate-type the CLI accepts, with category, description,
+    relevant flags, and an example. Lets AI/CLI tooling discover
+    capabilities against a fresh OrcaSlicer install with no STL, no
+    presets, no --datadir. Closes the earlier brief's gap "help text
+    out of sync with reality" — operators no longer have to grep the
+    --calibrate-type tooltip prose to know what's accepted.
+
+    Verified: --list-calibrate-types → exit 0, JSON with 13 entries
+    grouped into flow-rate (5), tower (5), pattern (1), z-offset (2).
+    Output parses cleanly with jq / Python json module.
+
+orcaslicer-dev (2.4.0~dev-2026.06.22-3) UNRELEASED; urgency=medium
+
+  * CLI AI-friendly pass: --inspect-mesh action + --strict mode.
+    Slicer-chat 2026-06-22 — followup to the orient-feedback round.
+
+    --inspect-mesh (new action, parallel to --info):
+      Emits a structured JSON summary of the loaded model(s) to stdout
+      and exits 0 without slicing. Per-object: name, triangle_count,
+      instance_count, bbox_mesh_local (min/max/size/centroid — the
+      frame --ground-face-point uses), bbox_world + instance_offset,
+      and the top-N largest planar-face clusters sorted by area with
+      ready-to-use --ground-face-normal commands.
+
+      Runs AFTER transforms, so doubles as a dry-run: pass any
+      combination of --rotate-* / --ground-* / --scale / --center-on-bed
+      to preview the post-transform geometry without slicing. The AI
+      can iterate orient strategy at ~1s/call instead of ~30s/call.
+
+      Verified on Camera_Stand_Base.stl: top cluster (0,0,-1) 2253 mm²;
+      with --rotate-y 90 → bbox_world.z 20→27 (rotation visible); with
+      --ground-face-normal 1,0,0 → bbox_world.z 27→54 (orient visible).
+
+    --strict (new flag in actions def):
+      Re-elevates three classes of silent-pass conditions to non-zero
+      exits, for CI / scripted / AI pipelines that should never ship
+      a subtly broken slice:
+        (1) --calibrate-type gcode-path conflicts (today demoted to a
+            warning because calibration plates intentionally overlap)
+        (2) NON_CRITICAL slicing warnings (today only logged)
+        (3) CLI calibration prep that fell back to a defensive default
+            (cli_apply_flowrate_calib's missing_field_error paths,
+            future cli_apply_* generators that follow the same pattern)
+
+      Sanity: --strict --calibrate-type z-offset-pattern now exits
+      155 (CLI_GCODE_PATH_CONFLICTS) instead of slicing silently;
+      --strict on a normal slice + on calibrate-types without overlap
+      regression-tested to exit 0.
+
+orcaslicer-dev (2.4.0~dev-2026.06.22-2) UNRELEASED; urgency=medium
+
+  * CLI orient: auto-lift to Z=0 after grounding (slicer-chat 2026-06-22
+    cammount-orient-feedback). The new --ground-* / --lay-flat primitives
+    landed but had a hidden footgun: after Quaterniond rotation the
+    grounded face often sat at z=-1e-9 from FP rounding, and the slicer
+    rejected the model with the cryptic "No layers were detected" error.
+    Operator had to know to add --ensure-on-bed manually.
+
+    Root cause: my apply_ground_rotation called ModelObject::ensure_on_bed,
+    but that's a no-op for CLI-loaded instances — the lift skips any
+    instance whose auto_drop flag is false, and CLI loaders default it
+    to false. (Auto_drop is the GUI's "moved-by-mouse → drop-to-bed" flag.)
+
+    Fix: apply the lift directly in apply_ground_rotation. For each
+    instance, compute its world-coord bbox min.z and shift the Z offset
+    by -min.z. Works whether the rotation landed the part slightly below
+    OR slightly above Z=0 — both cases now snap to exactly Z=0.
+
+    Sanity verified on Camera_Stand_Base.stl + Klipper Cube Test:
+      --ground-face-normal 1,0,0   270 layers from Z=0.2 (was: error)
+      --ground-largest-face 1      100 layers from Z=0.2 (no-op rotate)
+      --ground-largest-face 1 --center-on-bed 1 also clean
+
+    Other feedback items from the brief NOT addressed in this version
+    (separate work, lower priority):
+    - "; estimated first layer printing time = 1s" — appears to be a
+      time-estimator bug in PrintObject's per-layer time calc, not in
+      the orient code. Investigate separately.
+    - "setup params error" doesn't say which flag is wrong when a
+      coInt flag is given as a naked switch — comes from the upstream
+      m_config.validate() path, broader CLI parser change.
+
+orcaslicer-dev (2.4.0~dev-2026.06.22-1) UNRELEASED; urgency=medium
+
+  * CLI: ground-a-face primitives + flow-yolo / pa-tower / rotate segfault
+    fixes. Today's pass closes the operator-feedback briefs:
+
+    NEW orient primitives (slicer-chat 2026-06-22 cammount-orient brief):
+      --ground-largest-face / --lay-flat  Find the largest planar face
+        cluster (sum of coplanar triangle areas by quantized normal) and
+        rotate so it sits on Z=0. Covers ~80% of "this part has one
+        obvious orientation" cases.
+      --ground-face-normal NX,NY,NZ       Rotate so the face whose
+        mesh-local normal best matches the given vector sits on Z=0.
+      --ground-face-point X,Y,Z           Find the triangle containing
+        the given mesh-local point (post-mesh-centering coords) and
+        ground its face. Disambiguates overlapping inner+outer faces
+        by preferring the normal pointing outward from the bbox centroid.
+      --center-on-bed 1                   Translate so XY bbox centroid
+        lands at the bed center. Derived from printable_area or falls
+        back to (125,110) for a Core One footprint.
+    All implemented in src/slic3r/Utils/MeshOrient.{cpp,hpp}, mirroring
+    the Selection::flattening_rotate math (Quaterniond setFromTwoVectors).
+    CLI argument order is preserved by opt_order so flags compose naturally.
+
+    flow-yolo SEGFAULT (slicer-chat 2026-06-22 flow-yolo-segfault brief):
+      cli_apply_flowrate_calib derefed nullptr config options when a
+      preset's `inherits` chain didn't resolve (typical without
+      --datadir). Now every option lookup is guarded; missing keys log
+      a clear error pointing at the field + suggest --datadir, function
+      returns cleanly instead of crashing. Side effect: flow-* variants
+      now slice successfully without --datadir too (user preset values
+      alone are sufficient).
+
+    pa-tower SIGSEGV (uncommitted carryover from earlier today):
+      find_optimal_PA_speed read outer_wall_speed/nozzle_diameter/
+      filament_max_volumetric_speed without null checks. CLI path passes
+      a config that hasn't yet been filled by Print::apply(), so optional
+      keys are absent and assert(...) was a no-op under NDEBUG. Local
+      scalar/vector_at lambdas fall back to each option's ConfigDef
+      default. GUI behavior unchanged. Two-arg get_abs_value() now throws
+      ConfigurationError on null option instead of segfaulting (matches
+      the single-arg overload behavior).
+
+    Pre-existing CLI rotate crash (caught while testing the orient code):
+      PartPlate::check_outside derefed m_plater (null in CLI mode) when
+      an instance dipped below SINKING_Z_THRESHOLD. Triggered the same
+      way by --rotate-y 90 / --ground-face-normal 1,0,0 / any large
+      rotation. Added m_plater null guard parallel to the existing
+      pattern at lines 196/672.
+
+    Sanity matrix on Camera_Stand_Base.stl + Klipper Cube Test:
+      --ground-largest-face: bottom face cluster 2253 mm², lay-flat ok
+      --lay-flat: alias verified identical to above
+      --ground-face-normal 0,0,-1: best_dot=1.0, no-op rotation
+      --ground-face-normal 1,0,0: 90° around Y (was prior crash via
+        the null-Plater path; now works after the guard)
+      --ground-face-normal 0,1,0: 90° around X
+      --ground-face-point 0,0,-10: bottom face, 225 mm², outward chosen
+        correctly over interior cross-section
+      --ground-face-point 9999,9999,9999: exit 254 with clear error
+      --center-on-bed 1: shift computed and applied
+      flow-yolo-* without --datadir: now slices successfully
+      --rotate-y 90 (regression): works (was pre-existing CLI crash)
+
+orcaslicer-dev (2.4.0~dev-2026.06.21-1) UNRELEASED; urgency=medium
+
+  * CLI z-ladder: visual aids default OFF + working toggle plumbing.
+    Slicer-chat 2026-06-21 — operators using a flatbed scanner identify
+    bands by Y position, so the AI-vision fiducials and DPI scale bar are
+    unused waste on every ladder run (~2 minutes + ~2g across 4 runs).
+    Defaults all flipped to OFF (parallel to --zladder-id-dots flip on -19).
+    Operators who DO use vision/DPI explicitly opt in.
+
+    Toggle plumbing was also broken — bool flags accepted any trailing
+    value silently but applied none of it:
+      --no-zladder-fiducials       Invalid (BBS-disabled, won't fix)
+      --zladder-fiducials=false    silently ignored (deserialize fails,
+                                    caller didn't check)
+      --zladder-fiducials 0        silently ignored (bool parser doesn't
+                                    consume next arg, Config.cpp:1660)
+      --zladder-fiducials false    same
+    Net: bool flags were ON-only — once a default landed, operator was
+    stuck. Fix: change the 3 flag types from coBool to coInt (0|1).
+    Matches the existing --arrange convention. Both `--flag 0|1` and
+    `--flag=0|1` now work; invalid values are loud errors instead of
+    silent ignores.
+
+    Sanity matrix verified — all 8 forms behave correctly:
+      (no flag)                    → off (fid=0)
+      --zladder-fiducials 1        → on  (fid=40)
+      --zladder-fiducials 0        → off (was silent ignore)
+      --zladder-fiducials=1        → on
+      --zladder-fiducials=0        → off
+      --zladder-fiducials=false    → loud error (was silent ignore)
+      --zladder-fiducials false    → loud error (was silent ignore)
+      --no-zladder-fiducials       → Invalid option (intentional)
+
+orcaslicer-dev (2.4.0~dev-2026.06.19-1) UNRELEASED; urgency=medium
+
+  * CLI z-ladder: flip --zladder-id-dots default to OFF. After 4+ iterations
+    on ASA + PLA, the per-band ID dots (1+2+3+4+5 = 15 small 0.8mm boxes east
+    of the pad) proved useless in practice — the pad never fragments (single
+    concentric-fill 60x75mm rectangle), and the fiducials + scale bar already
+    identify bands by Y position. Default OFF saves ~3s + ~0.6mm filament per
+    print and removes east-of-pad clutter from every scan. Pass the explicit
+    --zladder-id-dots flag to restore dots if a print does fragment.
+    Sidecar JSON also omits `id_dots:N` per band when dots aren't emitted,
+    so the JSON matches the physical plate geometry.
+
+  * calib: default-init Calib_Params scalar fields (start/end/step,
+    print_numbers, freqStart{X,Y}/freqEnd{X,Y}, test_model). Pre-existing
+    upstream — the user-provided default ctor only initialized `mode`, so
+    `Calib_Params{}` value-init left several scalars uninitialized.
+    cli_zladder_get_calib_params doing `out = Calib_Params{}` made GCC start
+    warning. Neutral defaults (0/false). No behavior change.
+
+orcaslicer-dev (2.4.0~dev-2026.06.18-4) UNRELEASED; urgency=medium
+
+  * CLI flow-rate: mirror per-object YOLO overrides globally so the gcode
+    header reports what was actually emitted, and make --flow-brim
+    actually toggle brim_type globally. Slicer-chat reported that a
+    --calibrate-type flow-yolo-recommended slice had a gcode header
+    showing wall_loops=2, sparse_infill_pattern=gyroid,
+    top_surface_pattern=monotonicline, brim_type=no_brim even though
+    --flow-brim was passed. The per-object overrides in
+    cli_apply_flowrate_calib were correct, but the gcode header at the
+    top of the file reflects the GLOBAL print_config, not per-object
+    overrides — so the header lied about what the slicer used, breaking
+    downstream verification + the brim flag entirely.
+
+    Fix mirrors the per-object setters globally too:
+      wall_loops=1, top_shell_layers=5, bottom_shell_layers=2,
+      sparse_infill_density=35%, skirt_loops=0,
+      sparse_infill_pattern=rectilinear,
+      top_surface_pattern=params.pattern (archimedean by default),
+    plus brim_type/brim_width/brim_object_gap driven by params.brim_enabled.
+
+    Note on the values: the original brief asked for
+    100% / 1+1 shells / archimedean-sparse per the OrcaSlicer wiki's
+    "Archimedean Chords / YOLO Recommended" page. Cross-checked against
+    upstream Plater::adjust_settings_for_flowrate_calib — the upstream
+    GUI uses 35% / 2+5 shells / rectilinear-sparse, and has done so since
+    PR #6479 "New YOLO flow rate calibration" (Aug 2024). The wiki page
+    is pre-PR-#6479 and stale. Values here mirror the active GUI,
+    intentionally identical to the per-object block 50 lines above. The
+    archimedean *signal* still appears on the visible top surface via
+    top_surface_pattern, which is what YOLO actually reads.
+
+    Sanity verified on Klipper Cube Test + ANYCUBIC PLA:
+      T1 (defaults):     header shows 1/35%/2/5/rectilinear/archimedean
+      T2 (--flow-brim --flow-brim-width 3): brim_type=outer_only width=3
+      T3 (--flow-height 4.0): 20 layer changes + block_height_mm=4 (regression OK)
+      T4 PRINT_START preserved across all three.
+
+orcaslicer-dev (2.4.0~dev-2026.06.18-3) UNRELEASED; urgency=medium
+
+  * CLI flow-rate: --calibrate-type flow-yolo-coarse and --flow-height mm.
+    Slicer-chat ask after a PLA YOLO needed seeding at 1.05 just to shift
+    the recommended ±0.05 range to catch a 1.04-1.06 optimum — if the
+    optimum had been at 0.92 or 1.15, recommended would have missed.
+
+    flow-yolo-coarse: 5 procedural blocks at modifiers ±0.10, ±0.05, 0
+    (so 0.90..1.10 coverage at seed=1.0). Trades resolution for range.
+    Same per-object pattern + brim handling as the existing flow-yolo
+    variants; loaded into the standard cli_apply_flowrate_calib hook.
+    Workflow: coarse first (one-time per filament+printer), then
+    recommended for per-spool refinement.
+
+    --flow-height mm (default 3.0, was hardcoded 2.0). Applies to all
+    flow-* variants. Replaces the hardcoded "9" in
+      zscale = (first_layer_h + 9 * layer_height) / 2
+    with
+      n_layers = round(flow_height_mm / layer_height)
+      zscale   = (first_layer_h + (n_layers - 1) * layer_height) / 2
+    Backward compat: --flow-height 2.0 reproduces the 10-layer output
+    bit-for-bit (modulo the new sidecar field). Default 3.0 → 15 layers,
+    more mass for peel + readable surface.
+
+    JSON sidecar gains block_height_mm field (all flow-* variants).
+
+    Verified on ASA + Klipper:
+      coarse defaults:    15 layers, 22m 12s, 5 blocks ±0.10/±0.05/0
+      recommended default: 15 layers, 40m 49s, 11 blocks (was 35m at 2mm)
+      recommended -h 2.0: 10 layers, 32m 44s (backward compat)
+      coarse -h 4.0:      20 layers, 25m 49s
+    PRINT_START preserved verbatim.
+
+orcaslicer-dev (2.4.0~dev-2026.06.18-2) UNRELEASED; urgency=medium
+
+  * CLI z-ladder: emit fiducials + scale_bar + per-band id_dots in JSON
+    sidecar, plus physical id-dot clusters east of the pad. Slicer chat
+    reported both missing. The cli_build_zladder generator was creating
+    fiducial L-shapes and the scale bar comb as physical objects but the
+    JSON emitter never serialized them, and id_dots was never wired at
+    all. One coordinated patch:
+      - JSON: fiducials array (4 entries with x/y in bed coords, id in
+        TL/TR/BR/BL, notch_corner in NW/NE/SE/SW)
+      - JSON: scale_bar block with origin/length_mm/tick_count
+      - JSON: each band entry gains id_dots = index+1
+      - Physical: per-band ID dot clusters added east of the pad
+        (band 0 = 1 dot, ..., band 4 = 5 dots; 0.8×0.8mm each). 15 dots
+        total for the default 5-band plate.
+    AI-vision tooling can attribute a peeled fragment to its band by
+    counting adjacent dots.
+    Verified on ASA + Klipper: same 7 Z_ADJUST emissions as before
+    (modulation unaffected), JSON now has fiducials/scale_bar/id_dots.
+
+orcaslicer-dev (2.4.0~dev-2026.06.18-1) UNRELEASED; urgency=medium
+
+  * CLI: add --calibrate-type z-ladder-banded / z-ladder-ramp.
+    Single-pad Z-offset sweep — replaces the interactive LCD-babystepping
+    workflow with a baked-in Z modulation across the pad. Print, scan
+    (or eyeball), pick the band that looks best, Z_OFFSET_SAVE.
+
+    Banded variant: N discrete Z-offset bands (default 5) across the Y
+    axis of the pad. Each band 15mm tall (default). Default range
+    -0.10..+0.10mm in 0.05mm steps. Clean visual transitions between
+    bands; AI vision attributes by Y position.
+
+    Ramp variant: continuous Z gradient over the pad height (default
+    75mm tall). Z updated per fill line via linear Y interpolation.
+    For sub-mm fine-tuning after banded got you close.
+
+    Implementation:
+    - New CalibMode::Calib_ZLadder_Banded / Calib_ZLadder_Ramp enum values
+    - Calib_Params extended with ladder_steps, ladder_band_height_mm,
+      ladder_pad_y_lo, ladder_pad_y_hi (all in MODEL coords)
+    - New GCode::_ladder_modulation_for_path helper called from both
+      extrude_path() AND extrude_multi_path() — emits SET_GCODE_OFFSET
+      Z_ADJUST=<delta> per fill line based on path.polyline.first_point().y()
+    - End-of-layer-1 restore in the calib_mode switch at GCode.cpp:4604+
+    - Pad uses ipMonotonicLine bottom-surface pattern so the slicer emits
+      each fill line as a separate ExtrusionPath in monotonic Y order
+      (rectilinear packs many lines into one multipath where first_point.y
+      only reflects the start of the entire snake — banding gets garbled).
+    - cli_build_zladder procedural generator: solid pad + 4 fiducials
+      (L-shapes with unique-corner notches) + scale-bar comb.
+
+    New CLI flags:
+      --zladder-steps N (default 5)
+      --zladder-start mm (default -0.10)
+      --zladder-end mm (default +0.10)
+      --zladder-band-height mm (default 15)
+      --zladder-height mm (ramp only, default 75)
+      --zladder-width mm (default 60)
+      --zladder-fiducials (default ON)
+      --zladder-scale-bar (default ON)
+
+    JSON sidecar gains z-ladder-banded and z-ladder-ramp branches with
+    params, pad_bbox, and (for banded) per-band z_offset_mm + y_low_mm
+    + y_high_mm in BED coords.
+
+    Verified on ASA + Klipper Core One:
+      banded defaults:  1 layer, 2m 39s, 7 Z_ADJUST insertions
+                        (5 band transitions + start no-op + end restore)
+      ramp defaults:    1 layer, 2m 39s, 177 Z_ADJUST insertions
+                        (one per fill line for continuous gradient)
+    PRINT_START contract preserved verbatim across both variants.
+
+orcaslicer-dev (2.4.0~dev-2026.06.17-4) UNRELEASED; urgency=medium
+
+  * CLI z-offset-pattern v8.1: emit grid_pitch_mm in the JSON sidecar.
+    The reference doc implied this top-level field was already there;
+    it wasn't (analysis tools previously had to infer the pitch from
+    command-line knowledge). One-liner fix — emitted alongside
+    plate_size_mm + zone_size_mm when --zcal-grid is on, omitted when
+    --zcal-grid=0. Reported from the slicer chat.
+
+orcaslicer-dev (2.4.0~dev-2026.06.17-3) UNRELEASED; urgency=medium
+
+  * CLI z-offset-pattern v8 — compact layout + structural grid mesh.
+    Reported from the slicer chat: the v7 plate was 100×100mm with mostly
+    empty space, and the single thin struts wouldn't survive a peel
+    attempt (visible as fragile single lines in the GUI preview). Three
+    coordinated changes:
+
+    1. COMPACT LAYOUT. Plate default reduced from 100mm to 60mm; zones
+       reduced from 30mm to 18mm; spacing/positions adjusted to pack
+       tightly. New plate footprint: 71×71mm (was 111×111mm — 60% area
+       reduction). Constants in cli_build_zcal_pattern adapted:
+         fid_off = half - 3.0 (was -5)
+         corner_off = half - 9.0 (was -12)
+         row_y = 0 (was +8, now centered)
+         zone_spacing = 1.5 (was 3.0)
+         scale_bar_y = -(zone/2 + 5) (now scales with zone size)
+       Pass --zcal-size 100 --zcal-zone-size 30 for the v7 wide layout.
+
+    2. STRUCTURAL GRID MESH. New 4mm-pitch rectangular grid of thin
+       single-perimeter lines covering the frame interior. Each grid
+       line is a 0.45mm-wide × 0.20mm-thick box, axis-aligned. Lines
+       bond to every island they touch via 0.5mm overlap at the
+       boundary (perimeter union → real physical bond). The grid acts
+       like rebar in concrete: tension is distributed across many small
+       connections so no single failure point can tear the peel.
+       Default segment count for 60×60 plate: 87 grid segments.
+
+    3. CONFIGURABLE GRID CLIPPING. By default the grid lines STOP at
+       zone/fiducial/C-loop/scale-bar boundaries so the calibration
+       signal area stays clean for scanner analysis (each line is
+       broken into sub-segments that fit between objects, each
+       sub-segment extends 0.5mm INTO the adjacent island at both
+       endpoints for bond). Pass --zcal-grid-over-zones to let lines
+       cross zones fully — fewer segments (54 instead of 87 for
+       defaults) but the scanner sees grid lines inside the zone
+       footprint and must mask them out via the metadata strut list.
+
+    New CLI flags:
+      --zcal-grid              default ON
+      --zcal-grid-pitch mm     default 4.0
+      --zcal-grid-over-zones   default OFF
+
+    Verified on ASA + Klipper:
+      defaults (60×60 + grid, stop at borders): 2 layers, 0.69g,
+        4m 31s, 87 grid segments + 35 non-grid objects
+      grid_over_zones (60×60 + grid crosses):    0.83g, 5m 12s, 54 segs
+      no_grid (60×60 without grid):              0.55g, ~3m, 35 objects
+      wide v7 layout (--zcal-size 100):          1.24g, 7m 55s, 130 segs
+
+    PRINT_START contract preserved verbatim. Conflict detector
+    suppression from v6.3 still in effect (the grid intentionally
+    overlaps every island for bond).
+
+  * CLI z-offset-pattern v7 — scale bar comb mesh. The scale bar was the
+    last source of peel fragmentation: baseline + 11 ticks shipped as
+    12 separate ModelObjects that scattered on peel. v7 replaces them
+    with a SINGLE custom-vertex polygon mesh containing all 12 elements
+    plus a strut to the frame. ~60-vertex CCW polygon: 4 baseline
+    corners + 11 ticks × 4 vertices each + 4 strut vertices, with the
+    strut detour positioned between ticks 5 and 6 (x∈[0.275, 0.725])
+    so it clears all tick X ranges. Baseline widened from 10mm to 11mm
+    so the end ticks (i=0, i=10) fit comfortably within the baseline
+    bbox. Triangulation::triangulate handles the ~60-vertex concave
+    polygon cleanly. The strut overlaps the frame bottom inner edge by
+    0.5mm — slicer unions perimeters at slice time, peel is solid.
+    Net object count: 46 → 35 (12 separate scale_* objects → 1 comb).
+    JSON sidecar gains a 12th strut entry "scale_bar_strut".
+    Verified on ASA + Klipper: 2 layers, 0.88g, 4m 12s.
+  * CLI z-offset-pattern v6.3 — peel-as-one-piece via merged geometry +
+    conflict-detector suppression. Reported from the slicer chat: even
+    with the 2026.06.16-5 peelable frame, the print fragments on peel
+    because fiducials / zones / C-loops sit as separate ModelObjects
+    inside the frame ring with no mechanical bond. Three fixes land here:
+
+    1. cli_emit_calib_outputs / cli_build_zcal_pattern now generate
+       fid+strut as a single custom-vertex polygon mesh per fiducial.
+       Each fiducial is an L-shape (5×5mm pad with a 1.5×1.5mm notch in
+       a unique corner — NW/NE/SE/SW — so AI vision can identify any
+       fragment even if peel scatters), with a 0.45mm thin tail extending
+       from the side OPPOSITE the notch toward the frame. Polygon
+       triangulated via libslic3r::Triangulation, extruded by 0.20mm,
+       added as ONE ModelObject — no inter-object conflict between pad
+       and strut. Same merge applied to zone_S+strut.
+    2. Zone G, zone W, and the 4 corner C-loops now get standalone
+       struts whose endpoints OVERLAP the island top edge AND the frame
+       inner edge by 0.5mm each. With overlap = 0.5mm, the slicer's
+       perimeter union welds the strut to both endpoints at slice time —
+       producing physical bond on the printed part.
+    3. CLI_GCODE_PATH_CONFLICTS check suppressed for any --calibrate-type
+       slice in OrcaSlicer.cpp. The overlapping geometry is intentional
+       for calibration plates; the conflict warning is downgraded to a
+       log message so the slice succeeds. Non-calibration slices still
+       enforce the check.
+
+    JSON sidecar grows a "struts" array with all 11 entries
+    (4 fid+tail, 1 zone_S+tail, 1 zone_G, 1 zone_W, 4 C-loop struts) so
+    AI-vision tooling can mask out the strut regions during zone
+    analysis. Fiducial entries grow notch_corner = "NW"|"NE"|"SE"|"SW".
+
+    New CLI flags introduced in v6.3:
+      --zcal-struts          (default ON)
+      --zcal-fiducial-ids    (default ON, drives the per-corner notches)
+      --zcal-zone-ids        (default ON, 1/2/3 small ID dots beside S/G/W)
+
+    Verified end-to-end on ASA + Klipper:
+      defaults:      2 layers, 0.87g, 4m 11s, 11 struts in JSON
+      no-extras:     2 layers, v5-compat, 3m 57s
+      no-frame:      1 layer,  v3-compat, 1m 28s
+    PRINT_START contract preserved verbatim in all three.
+
+    Known follow-up (v7): scale bar baseline + 11 ticks still fragment
+    on peel (each is a separate ModelObject). Will need to be replaced
+    with a single comb polygon mesh — too much code for v6.3.
+
+  * CLI z-offset-pattern: add optional peelable structural frame (default
+    ON) (originally landed 2026.06.16-5). Reported from the slicer chat: scanning a single-layer print on
+    the textured PEI sheet doesn't work (sheet sits 2-3mm above the
+    flatbed glass, blurring the scan past the scanner's depth-of-field).
+    The print needs to be peeled, but a 100×100mm single-layer ASA pad
+    is too fragile to peel without tearing. Solution: add a multi-layer
+    rectangular ring OUTSIDE the fiducial bbox so the whole print peels
+    as one piece. Frame is 4 thin extruded bars (top/bottom/left/right)
+    forming the ring. Calibration zones / fiducials / scale bar /
+    corner-C loops stay STRICTLY single-layer — only the frame is
+    multi-layer. Default 2 layers × 3mm wide × 5mm margin from fiducial
+    bbox. New CLI flags:
+      --zcal-frame              (default on)
+      --zcal-frame-layers N     (default 2, gives 0.40mm peelable height)
+      --zcal-frame-width mm     (default 3.0)
+      --zcal-frame-margin mm    (default 5.0)
+    Metadata + JSON sidecar grow a frame block (outer_bbox, inner_bbox,
+    layers, z_max_mm) so AI-vision tooling can ignore the frame region
+    during zone analysis. With frame on, total plate footprint expands
+    by 2*(margin+frame_width) per side (default: 100mm → 111mm). With
+    --zcal-frame=0, behavior matches the prior v4 single-layer plate.
+  * CLI: add --calibrate-type retraction-tower / vfa-tower. Both are
+    headless ports of Plater::calib_retraction / calib_VFA. Same shape
+    as the other towers (load DRC resource, cut to range, per-object
+    configs, Print::set_calib_params for per-layer modulation).
+    New flags: --retraction-tower-{start,end,step} mm,
+    --vfa-tower-{start,end,step} mm/s.
+  * CLI: unified calibration outputs (cli_emit_calib_outputs) — replaces
+    the Z-cal-only metadata injector with one post-slice emitter that
+    covers all 10 calibration types. Adds:
+      1. Per-block metadata comments in the gcode header for every type
+         (was only Z-cal before). Example for temp tower:
+           ; tower_block_0 = z_low=0.00, z_high=10.00, temp_c=235
+           ; tower_block_1 = z_low=10.00, z_high=20.00, temp_c=230
+         For flow-rate: per-block name + modifier + print_flow_ratio + XY.
+         For Z-cal: existing zone/fiducial/scale-bar coordinates.
+      2. A <basename>.calib.json sidecar next to the gcode with the same
+         content in structured form — AI-vision tooling consumes this
+         instead of line-by-line parsing the gcode header. Covers all
+         10 calibration types.
+    Encodes the per-layer modulation formulas the Print engine uses at
+    GCode.cpp:4604-4630 so the AI side doesn't have to invert
+    start/end/step from observed defect Z.
+  * CLI: dead-code removal of cli_inject_zcal_metadata (the Z-only
+    injector). Functionality is now in cli_emit_calib_outputs.
+    headless ports of Plater::calib_temp / calib_max_vol_speed /
+    _calib_pa_tower. Each loads its tower mesh from resources/calib/,
+    cuts it to the user's range, applies per-object + filament + print
+    configs line-for-line from the GUI, and sets Print::set_calib_params
+    so the gcode emitter modulates temperature / volumetric speed /
+    pressure advance per layer at generation time.
+    New CLI flags (all default to sensible PLA-range values):
+      --temp-tower-start C / --temp-tower-end C
+        (default 240→195; 5°C step is GUI-hardcoded)
+      --vs-tower-start mm3/s / --vs-tower-end mm3/s / --vs-tower-step mm3/s
+        (default 5→20 step 0.5; converted to mm/s internally via flow math
+        before set_calib_params, matching the GUI's mm3_per_mm conversion)
+      --pa-tower-start s / --pa-tower-end s / --pa-tower-step s
+        (default 0.0→0.08 step 0.002; suitable for direct-drive)
+    Verified on PLA: temp tower emits M104 at every 10mm Z transition
+    (8 blocks, S235→S200), vs tower ramps F1500→F2040 in outer-wall moves
+    over 22mm height, PA tower emits SET_PRESSURE_ADVANCE per layer.
+    PRINT_START contract preserved verbatim.
+  * CLI: add --calibrate-type z-offset-pattern — scanner-friendly Z-offset
+    calibration plate generated procedurally (TriangleMesh primitives, no
+    pre-built 3MF resource). Single-layer plate (0.20mm) with:
+      - 4 corner fiducial squares for AI-vision auto-alignment / de-skew
+      - 10mm scale bar with 11 ticks for DPI cross-verification
+      - Zone S (solid concentric pad) — squish-uniformity indicator
+      - Zone G (3 wall-pairs at 0.5/0.6/0.8mm gaps) — under-Z closes gaps,
+        over-Z leaves all open
+      - Zone W (3 single-perimeter freestanding walls) — over-squish detector
+      - Zone C (4 corner loops) — cross-bed Z uniformity
+    Coordinate ground-truth (bed-space) of every primitive is post-injected
+    as metadata comments at the top of the gcode (calibration_type,
+    fiducial_positions, scale_bar_origin, zone_*_center, zone_*_size,
+    zone_G_gaps_mm, zone_W_wall_count, zone_C_corners) so AI-vision tooling
+    can map scan pixels to test zones without inferring from geometry.
+    New flags: --zcal-size mm (default 100), --zcal-zone-size mm (default 30),
+    --zcal-fiducials, --zcal-scale-bar, --zcal-zone-labels (v1: off; labels
+    are documented in metadata comments instead of as stick-font geometry).
+    PRINT_START contract preserved verbatim — the standard --slice 0 pipeline
+    handles temperatures + extrusion + start gcode template substitution.
+    Estimated print time on a 100mm plate: ~1m 30s at 25mm/s first-layer speed.
+  * CLI flow-rate calibration: port the brim auto-spacing logic from the
+    GUI (Plater.cpp:13076-13115) into cli_apply_flowrate_calib. The first
+    cut set per-block brim configs but left blocks at the 3MF's native
+    31mm grid — with 30mm blocks that's only 1mm edge gap, so adjacent
+    brims merged. Now scales positions outward from the cluster centroid
+    by the smallest uniform factor that widens every gap to
+    2*brim_width + brim_extra_gap (matches GUI math line-for-line).
+  * CLI flow-rate calibration: port the missing per-object setters
+    (print_flow_ratio derived from object name, calib_flowrate_topinfill_
+    special_order) and the print-config overrides (layer_height,
+    initial_layer_print_height, alternate_extra_wall=false,
+    reduce_crossing_wall=true, enable_wrapping_detection=false,
+    max_volumetric_extrusion_rate_slope=0). Without these every block
+    extruded identically — the test was silently a no-op for flow rate
+    variation.
+  * CLI flow-rate calibration: --flow-blocks N and --flow-range R for
+    subsetting the loaded block-pair objects. Both compose (intersection).
+  * debian/rules: skip dh_dwz (orca-slicer's debug info trips the
+    "Too many DIEs" guard, and bundled libs lack .debug_info).
+  * CLI pa-tower: fix SIGSEGV (exit 139) — guard null ConfigOption
+    derefs in the calibration apply path.
+  * Root cause: cli_apply_pa_tower runs on the merged config before
+    Print::apply() fills defaults, so optional keys line_width and
+    outer_wall_speed were absent and dereferenced. The assert() guards
+    compile out under NDEBUG (RelWithDebInfo), turning misses into null
+    derefs. GUI path passes a fully-defaulted full_config() so it never
+    hit this.
+
+  [ Packerlschupfer ]
+  * Fixes: calib.cpp find_optimal_PA_speed reads
+    outer_wall_speed/nozzle_diameter/filament_max_volumetric_speed with
+    ConfigDef-default fallbacks; CalibCLI.cpp guards the line_width
+    get_abs_value (0 = auto); Config.cpp two-arg get_abs_value throws
+    instead of segfaulting; PrintConfig.cpp --calibrate-type help lists
+    all supported types.
+
+ --   
+
+orcaslicer-dev (2.4.0~dev-2026.06.15-1) UNRELEASED; urgency=medium
+
+  * Add CLI calibration generators for the flow-rate test family
+    (flow-yolo-recommended, flow-yolo-perfectionist, flow-pass1,
+    flow-pass2). Mirrors the GUI Calibration Wizard's
+    adjust_settings_for_flowrate_calib via the headless free function
+    cli_apply_flowrate_calib in Slic3r::Utils::CalibCLI. New flags:
+    --calibrate-type, --flow-pattern (archimedean-chords | monotonic-line),
+    --flow-brim, --flow-brim-width, --flow-brim-gap. Falls through to the
+    existing --slice pipeline so PRINT_START contract is preserved.
+  * Sync dev-allpatches branch with upstream main (rebased onto current
+    HEAD; PR #13991 Moonraker host type now merged upstream, dropped from
+    cumulative branch since it's in main).
+  * #13728 Preset::save uses get_type_string (local names) instead of
+    get_iot_type_string (cloud-format names) — caught downstream when
+    patched-build GUI saves wrote "type":"printer" / "print" and the CLI
+    loader (string-compares against "machine"/"process") rejected them.
+
+ -- Packerlschupfer <83344883+packerlschupfer@users.noreply.github.com>  Mon, 15 Jun 2026 17:00:00 +0200
+
+orcaslicer-dev (2.4.0~dev-2026.06.02-1) UNRELEASED; urgency=medium
+
+  * Cumulative build from dev-allpatches branch on the fork: rolls up
+    PRs #13548, #13728, #13729, #13730, #13731, and #13991.
+
+ -- Packerlschupfer <83344883+packerlschupfer@users.noreply.github.com>  Tue, 02 Jun 2026 00:20:00 +0200
+
+orcaslicer-dev (2.4.0~dev-2026.06.01-1) UNRELEASED; urgency=medium
+
+  * Sync working tree with upstream main (118 commits absorbed, includes
+    PR #13532 CLI thumbnail hardening and PR #13793 detached-preset fix).
+  * Add "Moonraker (Klipper)" host type for native Moonraker REST flow:
+    GET /server/info, multipart POST /server/files/upload (root from
+    upload_data.storage, fallback "gcodes"), JSON POST /printer/print/start.
+    Implements get_storage() via /server/files/roots so the storage picker
+    can list writable roots. Auth via X-Api-Key (optional). For use with
+    Klipper+Moonraker setups and Buddy-fork firmwares that expose the
+    Moonraker REST surface.
+
+ -- Packerlschupfer <83344883+packerlschupfer@users.noreply.github.com>  Mon, 01 Jun 2026 12:00:00 +0200
+
+orcaslicer-dev (2.4.0~dev-2026.05.18.6-1) UNRELEASED; urgency=medium
+
+  * Fix relative-path argv on GUI launch (Bug 6): absolutize input file
+    paths via boost::filesystem::weakly_canonical before handing to
+    GUI_InitParams. wxWidgets changed the process cwd during init, so
+    `orcaslicer-dev model.3mf` from any directory other than the binary's
+    runtime cwd silently failed to load (or showed "no geometry data").
+
+ -- Packerlschupfer <83344883+packerlschupfer@users.noreply.github.com>  Mon, 18 May 2026 18:35:07 +0200
+
+orcaslicer-dev (2.4.0~dev-2026.05.18.5-1) UNRELEASED; urgency=medium
+
+  * Fix CLI --export-3mf marking user overrides as dirty in GUI (Bug 5):
+    resolve_inherits now records the child-vs-parent key diff into
+    different_settings_to_system, so GUI re-loading the project file
+    keeps the user filament/process/printer preset clean instead of
+    showing the "unsaved changes" dialog.
+
+ -- Packerlschupfer <83344883+packerlschupfer@users.noreply.github.com>  Mon, 18 May 2026 17:11:07 +0200
+
+orcaslicer-dev (2.4.0~dev-2026.05.18.4-1) UNRELEASED; urgency=medium
+
+  * Patch FlowRateCalibrationDialog: enforce minimum size hint and
+    remove redundant Fit() in on_dpi_changed (fixes 222x249 shrink after
+    main-window minimize on wxGTK).
+  * Add optional outer brim with auto-spacing to Flow Rate Calibration
+    dialog (helps warp-prone filaments like ASA without merging adjacent
+    calibration blocks).
+  * Rebase onto upstream main (size-hint fix PR #13545 now merged). Brim
+    toggle patch (PR #13548) carried as local working-tree patch pending
+    review.
+  * Fix CLI compatibility check for non-BBL system process profiles
+    (evaluate compatible_printers_condition); emit Preset::Type in saved
+    user preset JSONs so CLI --load-settings can resolve user presets.
+  * Fix CLI inherits chain resolution via PresetBundle (Bug 3): system
+    process/filament JSONs loaded via --load-settings now have parent
+    values merged in (sparse_infill_density, layer_height, etc.).
+    orca_slice.sh workaround obsolete.
+  * Repackage with refreshed build/package/ (previous 18.2-1 .deb was
+    packaged before build_linux.sh -si refreshed the install staging
+    dir, so it shipped pre-CLI-fix binary).
+  * Fix --export-3mf producing 3MFs the GUI can't load (Bug 4):
+    synthesize a minimal Metadata/plate_1.json from model bboxes when no
+    slice result exists, so PlateBBoxData::is_valid() returns true and
+    the GUI 3MF loader accepts the export.
+
+ -- Packerlschupfer <83344883+packerlschupfer@users.noreply.github.com>  Mon, 18 May 2026 16:11:07 +0200
+
+orcaslicer-dev (2.4.0~dev-2026.05.08-1) unstable; urgency=medium
+
+  * Initial development build packaging.
+  * Built from upstream main branch (V2.4.0-dev).
+  * Self-contained install to /opt/orcaslicer-dev/.
+
+ -- Packerlschupfer <83344883+packerlschupfer@users.noreply.github.com>  Thu, 08 May 2026 21:00:00 +0000

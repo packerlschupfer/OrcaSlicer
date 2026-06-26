@@ -1,0 +1,14 @@
+[Desktop Entry]
+Name=OrcaSlicer (dev)
+GenericName=3D Printer Slicer
+Comment=Slice 3D models for FDM printers (development build)
+Exec=/usr/bin/orcaslicer-dev %F
+Icon=orcaslicer-dev
+Type=Application
+Terminal=false
+StartupNotify=true
+Categories=Graphics;3DGraphics;Utility;
+Keywords=3D;Print;Slicer;FDM;Bambu;Prusa;
+MimeType=model/stl;application/vnd.ms-3mfdocument;application/prs.wavefront-obj;application/x-amf;
+PrefersNonDefaultGPU=true
+X-KDE-RunOnDiscreteGpu=true
