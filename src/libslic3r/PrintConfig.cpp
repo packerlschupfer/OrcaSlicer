@@ -10774,6 +10774,19 @@ CLIActionsConfigDef::CLIActionsConfigDef()
                      "verify resolution succeeded before burning a slice cycle.");
     def->set_default_value(new ConfigOptionBool(false));
 
+    //ORCA: --inspect-paint — dump the per-facet enforcer/blocker paint state
+    //      already stored on the loaded model (supports, seam, MMU, fuzzy-skin)
+    //      as JSON. Read side of the AI-driven paint pipeline: an operator can
+    //      round-trip inspect → edit → --paint-supports without loading the GUI.
+    def = this->add("inspect_paint", coBool);
+    def->label = L("Inspect paint (JSON to stdout)");
+    def->tooltip = L("Print a structured JSON summary of every painted layer "
+                     "(supports, seam, MMU color, fuzzy-skin) already stored on "
+                     "the loaded model — per-state facet count, surface area, "
+                     "and mesh-local bounding box — then exit. Lets AI/CLI "
+                     "tooling reason about existing paint without loading the GUI.");
+    def->set_default_value(new ConfigOptionBool(false));
+
     def = this->add("export_settings", coString);
     def->label = L("Export Settings");
     def->tooltip = L("Export settings to a file.");

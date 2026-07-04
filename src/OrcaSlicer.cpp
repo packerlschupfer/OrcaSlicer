@@ -53,6 +53,7 @@ using namespace nlohmann;
 #include "libslic3r/PresetBundle.hpp"
 #include "slic3r/Utils/CalibCLI.hpp"
 #include "slic3r/Utils/MeshOrient.hpp"
+#include "slic3r/Utils/PaintCLI.hpp"
 #include "libslic3r/Geometry.hpp"
 #include "libslic3r/GCode.hpp"
 #include "libslic3r/GCode/PostProcessor.hpp"
@@ -6072,6 +6073,16 @@ int CLI::run(int argc, char **argv)
             //      --calibrate-type the CLI accepts. Static table; doesn't need
             //      input files or presets, so it can run as the only action.
             Slic3r::cli_emit_calib_types_json(boost::nowide::cout);
+            boost::nowide::cout.flush();
+        } else if (opt_key == "inspect_paint") {
+            //ORCA: --inspect-paint — read the per-facet enforcer/blocker state
+            //      from the loaded model and emit a JSON summary. Runs before
+            //      slicing; no config resolution needed.
+            const std::string source = m_input_files.empty() ? std::string("<no input>") : m_input_files.front();
+            for (Model &model : m_models) {
+                model.add_default_instances();
+                Slic3r::PaintCLI::inspect_to_json(model, source, boost::nowide::cout);
+            }
             boost::nowide::cout.flush();
         } else if (opt_key == "inspect_config") {
             //ORCA: --inspect-config — emit the fully-resolved effective config

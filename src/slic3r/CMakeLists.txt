@@ -640,6 +640,8 @@ set(SLIC3R_GUI_SOURCES
     Utils/CalibCLI.hpp
     Utils/MeshOrient.cpp
     Utils/MeshOrient.hpp
+    Utils/PaintCLI.cpp
+    Utils/PaintCLI.hpp
     Utils/BBLCloudServiceAgent.cpp
     Utils/BBLCloudServiceAgent.hpp
     Utils/BBLPrinterAgent.cpp
