@@ -12072,12 +12072,12 @@ CLIActionsConfigDef::CLIActionsConfigDef()
                      "verify resolution succeeded before burning a slice cycle.");
     def->set_default_value(new ConfigOptionBool(false));
 
-    //ORCA: --paint-supports — write side of the AI-driven paint pipeline.
+    //ORCA: --paint — write side of the AI-driven paint pipeline.
     //      Reads a spec.json of ordered {kind, predicate} regions and stamps
     //      the resulting per-facet enforcer/blocker state onto the loaded
     //      model's supported_facets. Chain with --export-3mf to persist,
     //      or --slice to bake into gcode in one call.
-    def = this->add("paint_supports", coString);
+    def = this->add("paint", coString);
     def->label = L("Paint from spec (JSON to stdout, model mutated in place)");
     def->tooltip = L("Apply a JSON spec of ordered (kind, predicate) regions to a "
                      "paint layer on the loaded model. The spec's \"layer\" field "

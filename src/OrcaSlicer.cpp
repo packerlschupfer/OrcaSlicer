@@ -6405,8 +6405,8 @@ int CLI::run(int argc, char **argv)
             //      input files or presets, so it can run as the only action.
             Slic3r::cli_emit_calib_types_json(boost::nowide::cout);
             boost::nowide::cout.flush();
-        } else if (opt_key == "paint_supports") {
-            //ORCA: --paint-supports — write per-facet enforcer/blocker state
+        } else if (opt_key == "paint") {
+            //ORCA: --paint — write per-facet enforcer/blocker state
             //      from a spec.json into the loaded model in place. Chained
             //      with --export-3mf or --slice, this closes the paint
             //      round-trip for AI/CLI tooling. Under --strict, any region
@@ -6416,7 +6416,7 @@ int CLI::run(int argc, char **argv)
             bool all_ok = true;
             for (Model &model : m_models) {
                 model.add_default_instances();
-                if (!Slic3r::PaintCLI::apply_supports_spec(model, spec, source, boost::nowide::cout))
+                if (!Slic3r::PaintCLI::apply_spec(model, spec, source, boost::nowide::cout))
                     all_ok = false;
             }
             boost::nowide::cout.flush();

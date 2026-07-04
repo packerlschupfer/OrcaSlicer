@@ -210,7 +210,7 @@ void inspect_to_json(const Model &model, const std::vector<std::string> &source_
     out << root.dump(2, ' ', false, json::error_handler_t::replace) << std::endl;
 }
 
-// =============================== --paint-supports ===========================
+// =============================== --paint ===========================
 
 namespace {
 
@@ -362,7 +362,7 @@ Layer parse_layer(const std::string &s)
     if (s == "seam")                  return Layer::Seam;
     if (s == "mmu")                   return Layer::Mmu;
     if (s == "fuzzy" || s == "fuzzy_skin") return Layer::Fuzzy;
-    throw std::runtime_error("--paint-supports: unknown layer \"" + s +
+    throw std::runtime_error("--paint: unknown layer \"" + s +
                              "\" (must be supports|seam|mmu|fuzzy)");
 }
 
@@ -396,11 +396,11 @@ EnforcerBlockerType parse_kind(const std::string &s, Layer layer)
     case Layer::Seam:
         if (s == "enforcer") return EnforcerBlockerType::ENFORCER;
         if (s == "blocker")  return EnforcerBlockerType::BLOCKER;
-        throw std::runtime_error("--paint-supports: kind \"" + s + "\" is not valid for layer \"" +
+        throw std::runtime_error("--paint: kind \"" + s + "\" is not valid for layer \"" +
                                  layer_str(layer) + "\" (must be enforcer|blocker|clear)");
     case Layer::Fuzzy:
         if (s == "fuzzy_skin" || s == "enforcer") return EnforcerBlockerType::FUZZY_SKIN;
-        throw std::runtime_error("--paint-supports: kind \"" + s + "\" is not valid for layer "
+        throw std::runtime_error("--paint: kind \"" + s + "\" is not valid for layer "
                                  "\"fuzzy\" (must be fuzzy_skin|clear)");
     case Layer::Mmu: {
         if (s.rfind("extruder_", 0) == 0) {
@@ -408,7 +408,7 @@ EnforcerBlockerType parse_kind(const std::string &s, Layer layer)
             if (n >= 1 && n <= int(EnforcerBlockerType::ExtruderMax))
                 return EnforcerBlockerType(n);
         }
-        throw std::runtime_error("--paint-supports: kind \"" + s + "\" is not valid for layer "
+        throw std::runtime_error("--paint: kind \"" + s + "\" is not valid for layer "
                                  "\"mmu\" (must be extruder_1..extruder_16 or clear)");
     }
     }
@@ -456,7 +456,7 @@ std::vector<ModelVolume *> select_volumes(Model &model, const json &spec)
 
 } // namespace
 
-bool apply_supports_spec(Model &model, const std::string &spec_path,
+bool apply_spec(Model &model, const std::string &spec_path,
                          const std::string &source_path,
                          std::ostream &report_out)
 {
@@ -464,13 +464,13 @@ bool apply_supports_spec(Model &model, const std::string &spec_path,
     {
         boost::nowide::ifstream in(spec_path.c_str());
         if (!in) {
-            BOOST_LOG_TRIVIAL(error) << "--paint-supports: cannot open " << spec_path;
+            BOOST_LOG_TRIVIAL(error) << "--paint: cannot open " << spec_path;
             report_out << json({{ "error", "cannot_open_spec" }, { "path", spec_path }}).dump(2) << std::endl;
             return false;
         }
         try { in >> spec; }
         catch (const std::exception &e) {
-            BOOST_LOG_TRIVIAL(error) << "--paint-supports: invalid JSON in " << spec_path << ": " << e.what();
+            BOOST_LOG_TRIVIAL(error) << "--paint: invalid JSON in " << spec_path << ": " << e.what();
             report_out << json({{ "error", "invalid_json" }, { "path", spec_path }, { "detail", e.what() }}).dump(2) << std::endl;
             return false;
         }
