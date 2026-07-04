@@ -10793,15 +10793,18 @@ CLIActionsConfigDef::CLIActionsConfigDef()
     //      model's supported_facets. Chain with --export-3mf to persist,
     //      or --slice to bake into gcode in one call.
     def = this->add("paint_supports", coString);
-    def->label = L("Paint supports from spec (JSON to stdout, model mutated in place)");
-    def->tooltip = L("Apply a JSON spec of ordered (kind, predicate) regions to "
-                     "the loaded model's support-paint layer. Each region matches "
-                     "source triangles by mesh-local bbox / z_min / z_max / "
-                     "normal_below (n·(-Z) ≥ threshold, i.e. facing down) and sets "
-                     "them to enforcer / blocker / clear. Emits a coverage report "
-                     "as JSON. Combine with --export-3mf to save the painted model, "
-                     "or --slice to bake it into gcode. Under --strict, any region "
-                     "matching 0 facets makes the action fail with a nonzero exit.");
+    def->label = L("Paint from spec (JSON to stdout, model mutated in place)");
+    def->tooltip = L("Apply a JSON spec of ordered (kind, predicate) regions to a "
+                     "paint layer on the loaded model. The spec's \"layer\" field "
+                     "selects supports (default) / seam / mmu / fuzzy; \"frame\" "
+                     "selects mesh_local (default) or world coords. Each region "
+                     "matches source triangles by bbox / z_min / z_max / "
+                     "normal_below (n·(-Z) ≥ threshold ⇒ facing down); optional "
+                     "reachable_from [x,y,z] flood-fills from the nearest triangle, "
+                     "and connected_component keeps only the largest connected "
+                     "match subset. Emits a coverage report as JSON. Combine with "
+                     "--export-3mf to save, or --slice to bake into gcode. Under "
+                     "--strict, any region matching 0 facets makes the action fail.");
     def->set_default_value(new ConfigOptionString(""));
 
     def = this->add("export_settings", coString);

@@ -352,13 +352,65 @@ std::vector<bool> largest_connected_component(const std::vector<bool> &matched,
     return best;
 }
 
-EnforcerBlockerType parse_kind(const std::string &s)
+enum class Layer { Supports, Seam, Mmu, Fuzzy };
+
+Layer parse_layer(const std::string &s)
 {
-    if (s == "enforcer") return EnforcerBlockerType::ENFORCER;
-    if (s == "blocker")  return EnforcerBlockerType::BLOCKER;
-    if (s == "clear")    return EnforcerBlockerType::NONE;
-    throw std::runtime_error("--paint-supports: unknown region kind \"" + s +
-                             "\" (must be enforcer|blocker|clear)");
+    if (s.empty() || s == "supports") return Layer::Supports;
+    if (s == "seam")                  return Layer::Seam;
+    if (s == "mmu")                   return Layer::Mmu;
+    if (s == "fuzzy" || s == "fuzzy_skin") return Layer::Fuzzy;
+    throw std::runtime_error("--paint-supports: unknown layer \"" + s +
+                             "\" (must be supports|seam|mmu|fuzzy)");
+}
+
+const char *layer_str(Layer l)
+{
+    switch (l) {
+    case Layer::Supports: return "supports";
+    case Layer::Seam:     return "seam";
+    case Layer::Mmu:      return "mmu";
+    case Layer::Fuzzy:    return "fuzzy";
+    }
+    return "?";
+}
+
+FacetsAnnotation &layer_facets(ModelVolume &mv, Layer l)
+{
+    switch (l) {
+    case Layer::Supports: return mv.supported_facets;
+    case Layer::Seam:     return mv.seam_facets;
+    case Layer::Mmu:      return mv.mmu_segmentation_facets;
+    case Layer::Fuzzy:    return mv.fuzzy_skin_facets;
+    }
+    return mv.supported_facets; // unreachable
+}
+
+EnforcerBlockerType parse_kind(const std::string &s, Layer layer)
+{
+    if (s == "clear") return EnforcerBlockerType::NONE;
+    switch (layer) {
+    case Layer::Supports:
+    case Layer::Seam:
+        if (s == "enforcer") return EnforcerBlockerType::ENFORCER;
+        if (s == "blocker")  return EnforcerBlockerType::BLOCKER;
+        throw std::runtime_error("--paint-supports: kind \"" + s + "\" is not valid for layer \"" +
+                                 layer_str(layer) + "\" (must be enforcer|blocker|clear)");
+    case Layer::Fuzzy:
+        if (s == "fuzzy_skin" || s == "enforcer") return EnforcerBlockerType::FUZZY_SKIN;
+        throw std::runtime_error("--paint-supports: kind \"" + s + "\" is not valid for layer "
+                                 "\"fuzzy\" (must be fuzzy_skin|clear)");
+    case Layer::Mmu: {
+        if (s.rfind("extruder_", 0) == 0) {
+            const int n = std::atoi(s.c_str() + 9);
+            if (n >= 1 && n <= int(EnforcerBlockerType::ExtruderMax))
+                return EnforcerBlockerType(n);
+        }
+        throw std::runtime_error("--paint-supports: kind \"" + s + "\" is not valid for layer "
+                                 "\"mmu\" (must be extruder_1..extruder_16 or clear)");
+    }
+    }
+    return EnforcerBlockerType::NONE;
 }
 
 // Locate the target volume(s). Returns pointers into the model; does not
@@ -422,18 +474,38 @@ bool apply_supports_spec(Model &model, const std::string &spec_path,
         }
     }
 
+    // Layer + frame — both optional, defaulting to supports / mesh_local for
+    // backward compatibility with the pre-step-4 spec shape.
+    Layer layer;
+    try { layer = parse_layer(spec.value("layer", std::string{"supports"})); }
+    catch (const std::exception &e) {
+        report_out << json({{ "error", "invalid_layer" }, { "detail", e.what() }}).dump(2) << std::endl;
+        return false;
+    }
+    const std::string frame = spec.value("frame", std::string{"mesh_local"});
+    if (frame != "mesh_local" && frame != "world") {
+        report_out << json({{ "error", "invalid_frame" }, { "detail", "frame must be mesh_local|world" }}).dump(2) << std::endl;
+        return false;
+    }
+    const bool frame_is_world = (frame == "world");
+
     // Parse regions upfront so errors surface before we touch the model.
     std::vector<Region> regions;
     if (!spec.contains("regions") || !spec["regions"].is_array()) {
         report_out << json({{ "error", "regions_missing_or_not_array" }}).dump(2) << std::endl;
         return false;
     }
-    for (const json &r : spec["regions"]) {
-        Region reg;
-        reg.kind_str = r.value("kind", "");
-        reg.state    = parse_kind(reg.kind_str);
-        reg.pred     = parse_predicate(r.value("select", json::object()));
-        regions.push_back(std::move(reg));
+    try {
+        for (const json &r : spec["regions"]) {
+            Region reg;
+            reg.kind_str = r.value("kind", "");
+            reg.state    = parse_kind(reg.kind_str, layer);
+            reg.pred     = parse_predicate(r.value("select", json::object()));
+            regions.push_back(std::move(reg));
+        }
+    } catch (const std::exception &e) {
+        report_out << json({{ "error", "invalid_region" }, { "detail", e.what() }}).dump(2) << std::endl;
+        return false;
     }
 
     std::vector<ModelVolume *> targets = select_volumes(model, spec);
@@ -450,7 +522,8 @@ bool apply_supports_spec(Model &model, const std::string &spec_path,
     json report;
     report["source"] = source_path;
     report["spec"]   = spec_path;
-    report["frame"]  = "mesh_local";
+    report["frame"]  = frame;
+    report["layer"]  = layer_str(layer);
     json targets_j = json::array();
     std::vector<std::string> warnings;
     bool all_regions_matched = true;
@@ -459,8 +532,20 @@ bool apply_supports_spec(Model &model, const std::string &spec_path,
         const indexed_triangle_set &its = mv->mesh().its;
         TriangleSelector selector(mv->mesh());
         // Fresh canvas — regions declaratively define the final state; prior
-        // paint on this volume is discarded (matches "spec-driven" semantics).
+        // paint on this volume (in the targeted layer) is discarded.
         selector.reset();
+
+        // World-frame transform: predicates and reachable_from seed are in
+        // world coords, so we transform centroids/normals BEFORE evaluating.
+        // Written state still lands on mesh-local triangle indices (unchanged
+        // by the coordinate reinterpretation).
+        Transform3d trafo = Transform3d::Identity();
+        if (frame_is_world) {
+            trafo = mv->get_matrix();
+            if (mv->get_object() && !mv->get_object()->instances.empty())
+                trafo = mv->get_object()->instances.front()->get_matrix() * trafo;
+        }
+        const Matrix3d normal_trafo = trafo.linear().inverse().transpose();
 
         // Precompute per-triangle geometry once; regions reuse. Neighbors are
         // built lazily (only if a region actually needs flood-fill / CC).
@@ -470,13 +555,22 @@ bool apply_supports_spec(Model &model, const std::string &spec_path,
         std::vector<double> areas(n_tris);
         for (size_t i = 0; i < n_tris; ++i) {
             const auto &t = its.indices[i];
-            const Vec3d a = its.vertices[t(0)].cast<double>();
-            const Vec3d b = its.vertices[t(1)].cast<double>();
-            const Vec3d c = its.vertices[t(2)].cast<double>();
+            Vec3d a = its.vertices[t(0)].cast<double>();
+            Vec3d b = its.vertices[t(1)].cast<double>();
+            Vec3d c = its.vertices[t(2)].cast<double>();
+            if (frame_is_world) {
+                a = trafo * a;
+                b = trafo * b;
+                c = trafo * c;
+            }
             centroids[i] = (a + b + c) / 3.0;
             Vec3d cross  = (b - a).cross(c - a);
             areas[i]     = 0.5 * cross.norm();
             normals[i]   = areas[i] > 1e-12 ? (cross / (2.0 * areas[i])).eval() : Vec3d::UnitZ();
+            // For scaled/mirrored volumes the cross-product normal is already
+            // in world orientation; normal_trafo is only needed when we later
+            // want a mesh-local normal — not the case here.
+            (void)normal_trafo;
         }
         std::optional<FaceNeighbors> neighbors; // lazy
 
@@ -559,9 +653,10 @@ bool apply_supports_spec(Model &model, const std::string &spec_path,
         }
         volume_report["regions"] = std::move(regions_j);
 
-        // Commit selector state into the FacetsAnnotation, replacing prior paint.
-        mv->supported_facets.reset();
-        mv->supported_facets.set(selector);
+        // Commit into the targeted paint layer, replacing prior state there.
+        FacetsAnnotation &fa = layer_facets(*mv, layer);
+        fa.reset();
+        fa.set(selector);
 
         targets_j.push_back(std::move(volume_report));
     }
