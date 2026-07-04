@@ -6084,6 +6084,26 @@ int CLI::run(int argc, char **argv)
                 Slic3r::PaintCLI::inspect_to_json(model, source, boost::nowide::cout);
             }
             boost::nowide::cout.flush();
+        } else if (opt_key == "paint_supports") {
+            //ORCA: --paint-supports — write per-facet enforcer/blocker state
+            //      from a spec.json into the loaded model in place. Chained
+            //      with --export-3mf or --slice, this closes the paint
+            //      round-trip for AI/CLI tooling. Under --strict, any region
+            //      that matches 0 facets makes the action fail.
+            const std::string source = m_input_files.empty() ? std::string("<no input>") : m_input_files.front();
+            const std::string spec   = m_config.opt_string(opt_key);
+            bool all_ok = true;
+            for (Model &model : m_models) {
+                model.add_default_instances();
+                if (!Slic3r::PaintCLI::apply_supports_spec(model, spec, source, boost::nowide::cout))
+                    all_ok = false;
+            }
+            boost::nowide::cout.flush();
+            if (strict_mode && !all_ok) {
+                record_exit_reson(outfile_dir, CLI_INVALID_PARAMS, 0,
+                                  cli_errors[CLI_INVALID_PARAMS], sliced_info);
+                flush_and_exit(CLI_INVALID_PARAMS);
+            }
         } else if (opt_key == "inspect_config") {
             //ORCA: --inspect-config — emit the fully-resolved effective config
             //      as JSON. Runs in the actions loop AFTER --load-settings /
