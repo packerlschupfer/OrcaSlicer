@@ -22,20 +22,20 @@ namespace PaintCLI {
 void inspect_to_json(const Model &model, const std::string &source_path,
                      std::ostream &out);
 
-// Apply a --paint-supports spec.json to `model` in place. The spec selects
-// one object + optional volume, then applies an ordered list of regions;
-// each region is (kind, predicate) where kind is enforcer/blocker/clear and
-// the predicate filters source triangles by bbox / z_min / z_max /
-// normal_below (n·(-Z) ≥ threshold, i.e. facing down). Emits a JSON
-// coverage report to `report_out`. Returns true if every region matched
-// ≥1 facet; false if any matched 0 (the caller can use this together with
-// --strict to fail the whole action).
-//
-// All coordinates in the spec are mesh-local. Frame conversion is out of
-// scope for this step; a future --frame=world flag will add it.
-bool apply_supports_spec(Model &model, const std::string &spec_path,
-                         const std::string &source_path,
-                         std::ostream &report_out);
+// Apply a --paint spec.json to `model` in place. The spec selects one
+// object + optional volume and a paint layer (supports/seam/mmu/fuzzy,
+// default supports), then applies an ordered list of regions. Each
+// region is (kind, predicate); predicates filter source triangles by
+// bbox / z_min / z_max / normal_below, plus optional reachable_from
+// (point-seeded flood-fill) and connected_component (keep only the
+// largest connected match subset). Coordinates are mesh-local by
+// default; set "frame": "world" for bed coords. Emits a JSON coverage
+// report to `report_out`. Returns true if every region matched ≥1
+// facet; false if any matched 0 (the caller can pair this with
+// --strict to fail the action).
+bool apply_spec(Model &model, const std::string &spec_path,
+                const std::string &source_path,
+                std::ostream &report_out);
 
 } // namespace PaintCLI
 } // namespace Slic3r
