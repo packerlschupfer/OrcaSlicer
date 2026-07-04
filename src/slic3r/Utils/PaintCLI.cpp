@@ -9,11 +9,17 @@
 #include <boost/nowide/fstream.hpp>
 #include <nlohmann/json.hpp>
 
+#include <array>
 #include <cmath>
+#include <cstdint>
 #include <fstream>
+#include <limits>
+#include <map>
 #include <optional>
+#include <queue>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace Slic3r {
@@ -212,8 +218,14 @@ struct Predicate {
     std::optional<BoundingBoxf3> bbox;
     std::optional<double>        z_min;
     std::optional<double>        z_max;
-    std::optional<double>        normal_below;  // dot(n, -Z) ≥ this  ⇒ facing down
-    bool                         all = false;   // shortcut: match every facet
+    std::optional<double>        normal_below;   // dot(n, -Z) ≥ this  ⇒ facing down
+    std::optional<Vec3d>         reachable_from; // flood-fill from nearest source triangle;
+                                                 // only neighbors that also match the other
+                                                 // fields propagate. Isolates one connected
+                                                 // face when combined with normal/bbox.
+    bool                         connected_component = false; // after matching, keep only
+                                                              // the largest connected subset
+    bool                         all = false;    // shortcut: match every facet
 };
 
 struct Region {
@@ -236,6 +248,12 @@ Predicate parse_predicate(const json &sel)
     if (sel.contains("z_min"))        p.z_min        = sel["z_min"].get<double>();
     if (sel.contains("z_max"))        p.z_max        = sel["z_max"].get<double>();
     if (sel.contains("normal_below")) p.normal_below = sel["normal_below"].get<double>();
+    if (sel.contains("reachable_from")) {
+        const auto &r = sel["reachable_from"];
+        p.reachable_from = Vec3d(r[0].get<double>(), r[1].get<double>(), r[2].get<double>());
+    }
+    if (sel.value("connected_component", false))
+        p.connected_component = true;
     return p;
 }
 
@@ -247,6 +265,91 @@ bool predicate_matches(const Predicate &p, const Vec3d &centroid, const Vec3d &n
     if (p.z_max       && centroid.z() > *p.z_max)                     return false;
     if (p.normal_below && (-normal.z()) < *p.normal_below)            return false;
     return true;
+}
+
+// Per-triangle 3-neighbor array, indexed by shared edge. Value -1 for a
+// boundary edge with no adjacent triangle. Built once per volume and
+// reused across all regions of a spec.
+using FaceNeighbors = std::vector<std::array<int, 3>>;
+
+FaceNeighbors compute_face_neighbors(const indexed_triangle_set &its)
+{
+    // Edge key = (min_vertex, max_vertex) — canonical ordering so
+    // both incident triangles hash into the same slot.
+    using EdgeKey = std::pair<int, int>;
+    std::map<EdgeKey, std::array<int, 2>> edges; // -> up to two owner triangles
+
+    auto canonical = [](int u, int v) -> EdgeKey {
+        return u < v ? EdgeKey{u, v} : EdgeKey{v, u};
+    };
+
+    for (size_t i = 0; i < its.indices.size(); ++i) {
+        const auto &t = its.indices[i];
+        for (int k = 0; k < 3; ++k) {
+            EdgeKey key = canonical(t(k), t((k + 1) % 3));
+            auto it = edges.find(key);
+            if (it == edges.end()) edges[key] = { int(i), -1 };
+            else if (it->second[1] == -1) it->second[1] = int(i);
+            // Non-manifold edges (>2 triangles) — silently keep the first two.
+        }
+    }
+
+    FaceNeighbors neighbors(its.indices.size(), {-1, -1, -1});
+    for (size_t i = 0; i < its.indices.size(); ++i) {
+        const auto &t = its.indices[i];
+        for (int k = 0; k < 3; ++k) {
+            EdgeKey key = canonical(t(k), t((k + 1) % 3));
+            const auto &owners = edges[key];
+            int other = owners[0] == int(i) ? owners[1] : owners[0];
+            neighbors[i][k] = other;
+        }
+    }
+    return neighbors;
+}
+
+// Find source triangle whose centroid is closest to `point`. Used to seed
+// flood fill; caller decides whether that seed also satisfies the region's
+// other predicates.
+int find_seed_triangle(const indexed_triangle_set &its, const Vec3d &point)
+{
+    int    best     = -1;
+    double best_d2  = std::numeric_limits<double>::infinity();
+    for (size_t i = 0; i < its.indices.size(); ++i) {
+        const auto &t = its.indices[i];
+        const Vec3d centroid = ((its.vertices[t(0)] + its.vertices[t(1)] + its.vertices[t(2)]).cast<double>()) / 3.0;
+        const double d2 = (centroid - point).squaredNorm();
+        if (d2 < best_d2) { best_d2 = d2; best = int(i); }
+    }
+    return best;
+}
+
+// Return the size and members of the largest connected component of
+// `matched`. Two matched triangles are connected if they share an edge.
+std::vector<bool> largest_connected_component(const std::vector<bool> &matched,
+                                              const FaceNeighbors     &neighbors)
+{
+    const int n = int(matched.size());
+    std::vector<bool> best(n, false);
+    std::vector<bool> visited(n, false);
+    int best_size = 0;
+    std::vector<int> component;
+    for (int seed = 0; seed < n; ++seed) {
+        if (!matched[seed] || visited[seed]) continue;
+        component.clear();
+        std::queue<int> q; q.push(seed); visited[seed] = true;
+        while (!q.empty()) {
+            int t = q.front(); q.pop();
+            component.push_back(t);
+            for (int nb : neighbors[t])
+                if (nb >= 0 && matched[nb] && !visited[nb]) { visited[nb] = true; q.push(nb); }
+        }
+        if (int(component.size()) > best_size) {
+            best_size = int(component.size());
+            std::fill(best.begin(), best.end(), false);
+            for (int t : component) best[t] = true;
+        }
+    }
+    return best;
 }
 
 EnforcerBlockerType parse_kind(const std::string &s)
@@ -359,48 +462,95 @@ bool apply_supports_spec(Model &model, const std::string &spec_path,
         // paint on this volume is discarded (matches "spec-driven" semantics).
         selector.reset();
 
+        // Precompute per-triangle geometry once; regions reuse. Neighbors are
+        // built lazily (only if a region actually needs flood-fill / CC).
+        const size_t n_tris = its.indices.size();
+        std::vector<Vec3d> centroids(n_tris);
+        std::vector<Vec3d> normals(n_tris);
+        std::vector<double> areas(n_tris);
+        for (size_t i = 0; i < n_tris; ++i) {
+            const auto &t = its.indices[i];
+            const Vec3d a = its.vertices[t(0)].cast<double>();
+            const Vec3d b = its.vertices[t(1)].cast<double>();
+            const Vec3d c = its.vertices[t(2)].cast<double>();
+            centroids[i] = (a + b + c) / 3.0;
+            Vec3d cross  = (b - a).cross(c - a);
+            areas[i]     = 0.5 * cross.norm();
+            normals[i]   = areas[i] > 1e-12 ? (cross / (2.0 * areas[i])).eval() : Vec3d::UnitZ();
+        }
+        std::optional<FaceNeighbors> neighbors; // lazy
+
         json volume_report;
         volume_report["object_name"]   = mv->get_object() ? mv->get_object()->name : "";
         volume_report["volume_name"]   = mv->name;
-        volume_report["n_facets_total"] = its.indices.size();
+        volume_report["n_facets_total"] = n_tris;
 
         json regions_j = json::array();
         for (size_t ri = 0; ri < regions.size(); ++ri) {
             const Region &reg = regions[ri];
-            size_t matched = 0;
+
+            // Phase 1 — evaluate the field predicates over every source triangle.
+            std::vector<bool> matched(n_tris, false);
+            for (size_t i = 0; i < n_tris; ++i)
+                if (predicate_matches(reg.pred, centroids[i], normals[i])) matched[i] = true;
+
+            // Phase 2 — if reachable_from, flood-fill from the nearest triangle,
+            // gated by the base-match predicate. Any base-matched triangle that
+            // is NOT connected to the seed drops out.
+            std::string fill_note;
+            if (reg.pred.reachable_from) {
+                if (!neighbors) neighbors.emplace(compute_face_neighbors(its));
+                int seed = find_seed_triangle(its, *reg.pred.reachable_from);
+                if (seed < 0 || !matched[seed]) {
+                    fill_note = "reachable_from seed did not match the region's other predicates; nothing painted";
+                    std::fill(matched.begin(), matched.end(), false);
+                } else {
+                    std::vector<bool> flood(n_tris, false);
+                    std::queue<int> q;
+                    q.push(seed); flood[seed] = true;
+                    while (!q.empty()) {
+                        int t = q.front(); q.pop();
+                        for (int nb : (*neighbors)[t])
+                            if (nb >= 0 && matched[nb] && !flood[nb]) { flood[nb] = true; q.push(nb); }
+                    }
+                    matched = std::move(flood);
+                }
+            }
+
+            // Phase 3 — if connected_component, keep only the largest.
+            if (reg.pred.connected_component && !reg.pred.reachable_from) {
+                if (!neighbors) neighbors.emplace(compute_face_neighbors(its));
+                matched = largest_connected_component(matched, *neighbors);
+            }
+
+            // Commit + collect stats.
+            size_t        n_matched = 0;
             BoundingBoxf3 hit_bb;
             bool          hit_bb_have = false;
             double        area_sum    = 0.0;
-
-            for (size_t i = 0; i < its.indices.size(); ++i) {
-                const stl_triangle_vertex_indices &t = its.indices[i];
-                const Vec3d a = its.vertices[t(0)].cast<double>();
-                const Vec3d b = its.vertices[t(1)].cast<double>();
-                const Vec3d c = its.vertices[t(2)].cast<double>();
-                const Vec3d centroid = (a + b + c) / 3.0;
-                Vec3d       cross    = (b - a).cross(c - a);
-                const double tri_area = 0.5 * cross.norm();
-                Vec3d normal = tri_area > 1e-12 ? (cross / (2.0 * tri_area)).eval() : Vec3d::UnitZ();
-
-                if (!predicate_matches(reg.pred, centroid, normal)) continue;
+            for (size_t i = 0; i < n_tris; ++i) {
+                if (!matched[i]) continue;
                 selector.set_facet(int(i), reg.state);
-                ++matched;
-                area_sum += tri_area;
-                if (!hit_bb_have) { hit_bb.min = hit_bb.max = a; hit_bb_have = true; }
-                else               hit_bb.merge(a);
-                hit_bb.merge(b);
-                hit_bb.merge(c);
+                ++n_matched;
+                area_sum += areas[i];
+                const auto &t = its.indices[i];
+                for (int k = 0; k < 3; ++k) {
+                    const Vec3d v = its.vertices[t(k)].cast<double>();
+                    if (!hit_bb_have) { hit_bb.min = hit_bb.max = v; hit_bb_have = true; }
+                    else               hit_bb.merge(v);
+                }
             }
 
             json region_j;
             region_j["index"]          = ri;
             region_j["kind"]           = reg.kind_str;
-            region_j["facets_matched"] = matched;
+            region_j["facets_matched"] = n_matched;
             region_j["area_mm2"]       = area_sum;
             if (hit_bb_have) region_j["bbox"] = bbox_to_json(hit_bb);
+            if (!fill_note.empty()) region_j["note"] = fill_note;
             regions_j.push_back(std::move(region_j));
 
-            if (matched == 0) {
+            if (n_matched == 0) {
                 all_regions_matched = false;
                 warnings.push_back("region[" + std::to_string(ri) + "] (" +
                                    reg.kind_str + ") matched 0 facets on volume \"" +
