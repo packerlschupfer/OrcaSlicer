@@ -12056,6 +12056,39 @@ CLIActionsConfigDef::CLIActionsConfigDef()
                      "the --calibrate-type tooltip.");
     def->set_default_value(new ConfigOptionBool(false));
 
+    //ORCA: --inspect-config — emit the fully-resolved effective config as JSON
+    //      after --load-settings / --load-filaments / --datadir have merged
+    //      everything. Lets AI/operator verify what's actually about to be
+    //      sliced before burning a slice cycle. The gcode header has the same
+    //      info but only after a successful slice — this catches the preset-
+    //      inheritance class of bug that we hit several times today (e.g. the
+    //      `gyroid` sparse_infill_pattern flow-yolo header surprise).
+    def = this->add("inspect_config", coBool);
+    def->label = L("Inspect effective config (JSON to stdout)");
+    def->tooltip = L("Print the fully-resolved effective print config as JSON to stdout — "
+                     "the same merged values that --slice would feed into the slicer — then "
+                     "exit. Includes source_presets (the paths that were loaded), config "
+                     "(every resolved key/value), and summary (key counts). Lets AI/operator "
+                     "verify resolution succeeded before burning a slice cycle.");
+    def->set_default_value(new ConfigOptionBool(false));
+
+    //ORCA: --paint-supports — write side of the AI-driven paint pipeline.
+    //      Reads a spec.json of ordered {kind, predicate} regions and stamps
+    //      the resulting per-facet enforcer/blocker state onto the loaded
+    //      model's supported_facets. Chain with --export-3mf to persist,
+    //      or --slice to bake into gcode in one call.
+    def = this->add("paint_supports", coString);
+    def->label = L("Paint supports from spec (JSON to stdout, model mutated in place)");
+    def->tooltip = L("Apply a JSON spec of ordered (kind, predicate) regions to "
+                     "the loaded model's support-paint layer. Each region matches "
+                     "source triangles by mesh-local bbox / z_min / z_max / "
+                     "normal_below (n·(-Z) ≥ threshold, i.e. facing down) and sets "
+                     "them to enforcer / blocker / clear. Emits a coverage report "
+                     "as JSON. Combine with --export-3mf to save the painted model, "
+                     "or --slice to bake it into gcode. Under --strict, any region "
+                     "matching 0 facets makes the action fail with a nonzero exit.");
+    def->set_default_value(new ConfigOptionString(""));
+
     def = this->add("export_settings", coString);
     def->label = L("Export Settings");
     def->tooltip = L("This exports settings to a file. Use - to write them to stdout.");
