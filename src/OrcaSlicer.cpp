@@ -54,6 +54,7 @@ using namespace nlohmann;
 #include "libslic3r/PresetBundle.hpp"
 #include "slic3r/Utils/CalibCLI.hpp"
 #include "slic3r/Utils/MeshOrient.hpp"
+#include "slic3r/Utils/PaintCLI.hpp"
 #include "libslic3r/Geometry.hpp"
 #include "libslic3r/GCode.hpp"
 #include "libslic3r/Model.hpp"
@@ -5909,6 +5910,45 @@ int CLI::run(int argc, char **argv)
             //      --calibrate-type the CLI accepts. Static table; doesn't need
             //      input files or presets, so it can run as the only action.
             Slic3r::cli_emit_calib_types_json(boost::nowide::cout);
+            boost::nowide::cout.flush();
+        } else if (opt_key == "inspect_paint") {
+            //ORCA: --inspect-paint — read the per-facet enforcer/blocker state
+            //      from the loaded model and emit a JSON summary. Runs before
+            //      slicing; no config resolution needed.
+            const std::string source = m_input_files.empty() ? std::string("<no input>") : m_input_files.front();
+            for (Model &model : m_models) {
+                model.add_default_instances();
+                Slic3r::PaintCLI::inspect_to_json(model, source, boost::nowide::cout);
+            }
+            boost::nowide::cout.flush();
+        } else if (opt_key == "inspect_config") {
+            //ORCA: --inspect-config — emit the fully-resolved effective config
+            //      as JSON. Runs in the actions loop AFTER --load-settings /
+            //      --load-filaments / --datadir have merged everything, so the
+            //      output reflects exactly what would be sliced. Catches preset-
+            //      inheritance failures before the slice cycle.
+            nlohmann::json j;
+            j["source_presets"]["load_settings"]  = nlohmann::json(load_configs);
+            j["source_presets"]["load_filaments"] = nlohmann::json(load_filaments);
+            j["source_presets"]["datadir"]        = m_config.opt_string("datadir");
+            j["config"] = nlohmann::json::object();
+            int n_scalar = 0, n_vector = 0;
+            for (const std::string &key : m_print_config.keys()) {
+                const ConfigOption *opt = m_print_config.option(key);
+                if (!opt) continue;
+                if (opt->is_scalar()) {
+                    j["config"][key] = opt->serialize();
+                    ++n_scalar;
+                } else {
+                    const ConfigOptionVectorBase *vec = static_cast<const ConfigOptionVectorBase*>(opt);
+                    j["config"][key] = vec->vserialize();
+                    ++n_vector;
+                }
+            }
+            j["summary"]["total_keys"]  = n_scalar + n_vector;
+            j["summary"]["scalar_keys"] = n_scalar;
+            j["summary"]["vector_keys"] = n_vector;
+            boost::nowide::cout << j.dump(2) << std::endl;
             boost::nowide::cout.flush();
         } else if (opt_key == "uptodate") {
             //already processed before
