@@ -10792,6 +10792,18 @@ CLIActionsConfigDef::CLIActionsConfigDef()
     //      the resulting per-facet enforcer/blocker state onto the loaded
     //      model's supported_facets. Chain with --export-3mf to persist,
     //      or --slice to bake into gcode in one call.
+    //ORCA: --render-paint OUT.ppm — headless CPU rasterizer that emits a
+    //      top-down (or bottom-up) PPM image of the model with painted
+    //      regions color-coded. Read-only visual verify; no GUI required.
+    def = this->add("render_paint", coString);
+    def->label = L("Render paint to PPM image (headless verify)");
+    def->tooltip = L("Emit a top-down PPM image of the loaded model with painted "
+                     "regions color-coded — supports/seam enforcers red, blockers "
+                     "blue, MMU extruders palette-colored, fuzzy_skin green. "
+                     "Read-only. Use with --render-layer, --render-view, and "
+                     "--render-clip-z-below / --render-clip-z-above.");
+    def->set_default_value(new ConfigOptionString(""));
+
     def = this->add("paint", coString);
     def->label = L("Paint from spec (JSON to stdout, model mutated in place)");
     def->tooltip = L("Apply a JSON spec of ordered (kind, predicate) regions to a "
@@ -10995,6 +11007,40 @@ CLITransformConfigDef::CLITransformConfigDef()
 CLIMiscConfigDef::CLIMiscConfigDef()
 {
     ConfigOptionDef* def;
+
+    //ORCA: companion knobs for --render-paint (which is a coString action in
+    //      CLIActionsConfigDef). Kept out of the action-loop so they don't
+    //      trigger CLI_UNSUPPORTED_OPERATION.
+    def = this->add("render_layer", coString);
+    def->label = L("Layer to visualize with --render-paint");
+    def->tooltip = L("supports (default) | seam | mmu | fuzzy.");
+    def->set_default_value(new ConfigOptionString("supports"));
+
+    def = this->add("render_view", coString);
+    def->label = L("View direction for --render-paint");
+    def->tooltip = L("top (default, look down -Z) | bottom (look up +Z).");
+    def->set_default_value(new ConfigOptionString("top"));
+
+    def = this->add("render_width", coInt);
+    def->label = L("Image width in pixels for --render-paint");
+    def->tooltip = L("Default 800.");
+    def->set_default_value(new ConfigOptionInt(800));
+
+    def = this->add("render_height", coInt);
+    def->label = L("Image height in pixels for --render-paint");
+    def->tooltip = L("Default 800.");
+    def->set_default_value(new ConfigOptionInt(800));
+
+    def = this->add("render_clip_z_below", coFloat);
+    def->label = L("Clip everything above world Z for --render-paint");
+    def->tooltip = L("If set, --render-paint hides mesh at world_z > value. "
+                     "Rays advance past hidden material.");
+    def->set_default_value(new ConfigOptionFloat(std::numeric_limits<double>::infinity()));
+
+    def = this->add("render_clip_z_above", coFloat);
+    def->label = L("Clip everything below world Z for --render-paint");
+    def->tooltip = L("If set, --render-paint hides mesh at world_z < value.");
+    def->set_default_value(new ConfigOptionFloat(-std::numeric_limits<double>::infinity()));
 
     /*def = this->add("ignore_nonexistent_config", coBool);
     def->label = L("Ignore non-existent config files");

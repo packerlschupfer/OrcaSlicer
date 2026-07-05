@@ -6104,6 +6104,30 @@ int CLI::run(int argc, char **argv)
                                   cli_errors[CLI_INVALID_PARAMS], sliced_info);
                 flush_and_exit(CLI_INVALID_PARAMS);
             }
+        } else if (opt_key == "render_paint") {
+            //ORCA: --render-paint OUT.ppm — headless CPU visualizer for the
+            //      loaded model's paint state. Read-only; write path handled by
+            //      the RenderPaintOpts struct populated from adjacent options.
+            Slic3r::PaintCLI::RenderPaintOpts ropts;
+            ropts.layer          = m_config.opt_string("render_layer");
+            ropts.view           = m_config.opt_string("render_view");
+            ropts.width_px       = m_config.opt_int("render_width");
+            ropts.height_px      = m_config.opt_int("render_height");
+            ropts.clip_z_below   = m_config.opt_float("render_clip_z_below");
+            ropts.clip_z_above   = m_config.opt_float("render_clip_z_above");
+            const std::string out = m_config.opt_string(opt_key);
+            bool all_ok = true;
+            for (Model &model : m_models) {
+                model.add_default_instances();
+                if (!Slic3r::PaintCLI::render_paint(model, out, ropts, boost::nowide::cout))
+                    all_ok = false;
+            }
+            boost::nowide::cout.flush();
+            if (strict_mode && !all_ok) {
+                record_exit_reson(outfile_dir, CLI_INVALID_PARAMS, 0,
+                                  cli_errors[CLI_INVALID_PARAMS], sliced_info);
+                flush_and_exit(CLI_INVALID_PARAMS);
+            }
         } else if (opt_key == "inspect_config") {
             //ORCA: --inspect-config — emit the fully-resolved effective config
             //      as JSON. Runs in the actions loop AFTER --load-settings /
