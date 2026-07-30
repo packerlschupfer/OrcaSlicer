@@ -1647,6 +1647,21 @@ void PresetCollection::load_presets(
                         preset.filament_id = inherit_preset->filament_id;
                         extend_default_config_length(config, false, {});
                         preset.config.update_diff_values_to_child_config(config, extruder_id_name, extruder_variant_name, *key_set1, *key_set2);
+                        //ORCA: belt-and-suspenders — unconditionally re-apply every scalar
+                        //      user override on top of the merged config. Fixes GUI silently
+                        //      keeping the parent's value for enum + string scalars
+                        //      (gcode_flavor, machine_start_gcode, machine_end_gcode, …) even
+                        //      when the user JSON overrides them. CLI's --load-settings path
+                        //      uses a plain apply() and works; the diff-merge path above
+                        //      dropped these in the GUI. Vector options are left to the
+                        //      diff-merge above (which respects extruder/variant striding).
+                        for (const std::string &key : config.keys()) {
+                            const ConfigOption *src = config.option(key);
+                            if (!src || !src->is_scalar()) continue;
+                            ConfigOption *dst = preset.config.option(key);
+                            if (dst && *dst != *src)
+                                dst->set(src);
+                        }
                     }
                     else {
                         auto inherits_config2 = dynamic_cast<ConfigOptionString *>(inherits_config);
