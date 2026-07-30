@@ -213,12 +213,20 @@ bool Moonraker::start_print(wxString &error_msg, const std::string &filename) co
 bool Moonraker::upload(PrintHostUpload upload_data, ProgressFn progress_fn, ErrorFn error_fn, InfoFn info_fn) const
 {
     //ORCA: POST /server/files/upload as multipart/form-data with:
-    //          file = <gcode file>
-    //          root = <storage root>     (Moonraker default: "gcodes")
+    //          file  = <gcode file>
+    //          root  = <storage root>     (Moonraker default: "gcodes")
+    //          print = "true"             (only when the user requested Upload & Print)
     //      Successful response shape:
     //          { "result": { "item": { "path": "<name>.gcode", "root": "<root>" }, "print_started": <bool> } }
-    //      We always start the print explicitly via /printer/print/start regardless of `print_started`
-    //      so the user can rely on a single call site for state.
+    //      When `print=true`, Moonraker itself queues the print inside the upload response — and if a
+    //      [power] device is configured with `on_when_upload_queued`, it powers the printer up and
+    //      waits for Klippy to be READY before starting. That's the whole point of Moonraker's
+    //      "Power on G-Code Uploads" feature (issue #14945). Our previous flow always fired an
+    //      immediate second POST /printer/print/start after upload, which raced the power-on and
+    //      returned HTTP 503 "Klippy Host not connected" on a cold printer, leaving the file
+    //      uploaded but not started. We now check `result.print_started` — if true, Moonraker
+    //      handled it and we're done; else we fall back to the explicit /printer/print/start
+    //      for older Moonrakers or buddy-forks that don't honour the print flag.
     wxString test_msg;
     if (!test(test_msg)) {
         error_fn(std::move(test_msg));
@@ -233,9 +241,12 @@ bool Moonraker::upload(PrintHostUpload upload_data, ProgressFn progress_fn, Erro
     //      addition later (storage picker) needs no change to this method.
     const std::string root = upload_data.storage.empty() ? std::string("gcodes") : upload_data.storage;
 
+    const bool want_start = upload_data.post_action == PrintHostPostUploadAction::StartPrint;
+
     std::string url = make_url("server/files/upload");
     bool result = true;
     std::string uploaded_path;
+    bool moonraker_started_print = false;
 
     BOOST_LOG_TRIVIAL(info) << boost::format("%1%: Uploading file %2% to %3% (root=%4%, filename=%5%, start_print=%6%)")
         % name
@@ -243,11 +254,14 @@ bool Moonraker::upload(PrintHostUpload upload_data, ProgressFn progress_fn, Erro
         % url
         % root
         % upload_filename.string()
-        % (upload_data.post_action == PrintHostPostUploadAction::StartPrint ? "true" : "false");
+        % (want_start ? "true" : "false");
 
     auto http = Http::post(std::move(url));
     set_auth(http);
     http.form_add("root", root)
+        //ORCA: `print=true` lets Moonraker queue the print inside the upload response, respecting
+        //      any [power] device on_when_upload_queued. Fixes issue #14945.
+        .form_add("print", want_start ? "true" : "false")
         .form_add_file("file", upload_data.source_path.string(), upload_filename.string())
         .on_complete([&](std::string body, unsigned status) {
             BOOST_LOG_TRIVIAL(debug) << boost::format("%1%: upload HTTP %2%: %3%") % name % status % body;
@@ -270,6 +284,9 @@ bool Moonraker::upload(PrintHostUpload upload_data, ProgressFn progress_fn, Erro
                         "%1%: upload response missing result.item.path, falling back to original filename `%2%`")
                         % name % uploaded_path;
                 }
+                //ORCA: `print_started: true` means Moonraker accepted the print (or queued it behind
+                //      power-on). Skip our explicit start_print in that case; else fall back to it.
+                moonraker_started_print = ptree.get<bool>("result.print_started", false);
             } catch (const std::exception &ex) {
                 BOOST_LOG_TRIVIAL(warning) << boost::format(
                     "%1%: could not parse upload response (%2%); falling back to original filename")
@@ -298,7 +315,11 @@ bool Moonraker::upload(PrintHostUpload upload_data, ProgressFn progress_fn, Erro
     if (!result)
         return false;
 
-    if (upload_data.post_action == PrintHostPostUploadAction::StartPrint && !uploaded_path.empty()) {
+    //ORCA: only fire the explicit /printer/print/start when Moonraker didn't already start
+    //      the print during upload. `moonraker_started_print` reflects `result.print_started`;
+    //      a modern Moonraker with `print=true` returns true immediately (or after power-on
+    //      wait). The fallback covers older Moonrakers / buddy-forks that ignore the flag.
+    if (want_start && !uploaded_path.empty() && !moonraker_started_print) {
         wxString start_msg;
         if (!start_print(start_msg, uploaded_path)) {
             error_fn(std::move(start_msg));
