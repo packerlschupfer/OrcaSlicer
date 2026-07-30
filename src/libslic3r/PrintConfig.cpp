@@ -11498,7 +11498,11 @@ CLIMiscConfigDef::CLIMiscConfigDef()
     def = this->add("allow_rotations", coBool);
     def->label = L("Allow rotation when arranging");
     def->tooltip = L("If enabled, Arrange will allow rotation when placing objects.");
-    def->set_default_value(new ConfigOptionBool(true));
+    // ORCA: default OFF. A flag that reads "allow" must be opt-in — the previous
+    // true default made `--arrange 1` silently rotate objects about Z even when
+    // `--allow-rotations` was not passed, wiping pre-baked orientations from
+    // `--ground-face-*` and similar. Matches ArrangeParams::allow_rotations = false.
+    def->set_default_value(new ConfigOptionBool(false));
 
     def = this->add("avoid_extrusion_cali_region", coBool);
     def->label = L("Avoid extrusion calibrate region when arranging");
