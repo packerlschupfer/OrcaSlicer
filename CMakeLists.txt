@@ -937,9 +937,20 @@ elseif(APPLE)
     set(Python3_LIBRARY "${_bundled_python_library}" CACHE FILEPATH "Bundled Python embed library" FORCE)
 endif()
 
-find_package(Python3 ${_bundled_python_version} EXACT REQUIRED
-    COMPONENTS Interpreter Development.Embed
-)
+# ORCA: EXACT is only meaningful when the bundled interpreter is actually forced
+# (WIN32 / APPLE branches above set Python3_EXECUTABLE / _INCLUDE_DIR / _LIBRARY
+# to the bundled files). On Linux there is no bundled interpreter and system
+# Python is used — 3.12.x is ABI-compatible for our embed usage, so require
+# major.minor only.
+if(WIN32 OR APPLE)
+    find_package(Python3 ${_bundled_python_version} EXACT REQUIRED
+        COMPONENTS Interpreter Development.Embed
+    )
+else()
+    find_package(Python3 ${_bundled_python_version_short} REQUIRED
+        COMPONENTS Interpreter Development.Embed
+    )
+endif()
 
 # Provide a minimal pybind11::embed target sourced from deps_src/pybind11 headers.
 set(PYBIND11_SOURCE_DIR "${CMAKE_SOURCE_DIR}/deps_src/pybind11")
