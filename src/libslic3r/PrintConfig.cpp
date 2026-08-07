@@ -11868,6 +11868,19 @@ CLIActionsConfigDef::CLIActionsConfigDef()
     def->tooltip = L("Do not run any validity checks, such as G-code path conflicts check.");
     def->set_default_value(new ConfigOptionBool(false));
 
+    //ORCA: --strict — opposite of --no-check. Re-elevates warnings that today
+    //      get silently logged into non-zero exits, so AI/CI scripts don't
+    //      "succeed" on subtly broken outputs. Handler + elevation sites in
+    //      OrcaSlicer.cpp (paint/render_paint action escalation, calib guard,
+    //      gcode-path-conflict escalation, NON_CRITICAL warning escalation).
+    def = this->add("strict", coBool);
+    def->label = L("Strict mode");
+    def->tooltip = L("Fail loudly (exit non-zero) on any warning that today gets silently "
+                     "logged: calibrate-type path conflicts, NON_CRITICAL slicing warnings, "
+                     "and CLI calibration prep that fell back to a default. Use this in "
+                     "CI / scripted pipelines that should never ship a subtly broken slice.");
+    def->set_default_value(new ConfigOptionBool(false));
+
     def = this->add("normative_check", coBool);
     def->label = L("Normative check");
     def->tooltip = L("Check the normative items.");
@@ -11887,6 +11900,20 @@ CLIActionsConfigDef::CLIActionsConfigDef()
     def = this->add("info", coBool);
     def->label = L("Output Model Info");
     def->tooltip = L("This outputs the model\u2019s information.");
+    def->set_default_value(new ConfigOptionBool(false));
+
+    //ORCA: --inspect-mesh \u2014 structured JSON summary of the loaded model(s)
+    //      to stdout. Per-object bbox + top-N planar-face clusters with
+    //      ready-to-use --ground-face-normal commands. Registered as an
+    //      action (parallel to --info) so it satisfies "needs an action" and
+    //      bypasses the GUI fallback. Handler: OrcaSlicer.cpp actions loop.
+    def = this->add("inspect_mesh", coBool);
+    def->label = L("Inspect mesh (JSON to stdout)");
+    def->tooltip = L("Print a structured JSON summary of the loaded model(s) \u2014 per-object "
+                     "mesh-local bbox + centroid, world bbox, and top-N largest planar-face "
+                     "clusters with their normals, areas, and ready-to-use "
+                     "--ground-face-normal commands \u2014 then exit. Lets AI/CLI tooling plan "
+                     "an orientation without slicing.");
     def->set_default_value(new ConfigOptionBool(false));
 
     //ORCA: --list-calibrate-types — emit JSON enumeration of every --calibrate-type
