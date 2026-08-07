@@ -5838,6 +5838,13 @@ int CLI::run(int argc, char **argv)
     // loop through action options
     bool export_to_3mf = false, load_slicedata = false, export_slicedata = false, export_slicedata_error = false;
     bool no_check = false;
+    //ORCA: strict_mode is referenced by --paint / --render-paint below to
+    //      escalate soft failures to CLI_INVALID_PARAMS. The full --strict
+    //      flag machinery (PrintConfig option + calib elevation sites,
+    //      originally commit b316ca44) was dropped in the dev-2026-08-01
+    //      rebase and needs a follow-up restore; without the option
+    //      registration this stays false, so paint actions never escalate.
+    bool strict_mode = false;
     std::string export_3mf_file, load_slice_data_dir, export_slice_data_dir, export_stls_dir;
     std::vector<ThumbnailData*> calibration_thumbnails;
     std::vector<int> plate_object_count(partplate_list.get_plate_count(), 0);
