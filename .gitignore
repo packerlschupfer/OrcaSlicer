@@ -49,3 +49,7 @@ internal_docs/
 # Python bytecode
 __pycache__/
 *.pyc
+
+# CLI --slice / --calibrate-type per-run report (dpkg-buildpackage + CLI runs
+# both leave this in the repo root); regenerated on every run.
+/result.json
