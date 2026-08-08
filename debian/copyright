@@ -1,0 +1,17 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: OrcaSlicer
+Upstream-Contact: https://github.com/OrcaSlicer/OrcaSlicer/issues
+Source: https://github.com/OrcaSlicer/OrcaSlicer
+
+Files: *
+Copyright: 2022-2026 SoftFever and OrcaSlicer contributors
+           2017-2024 Bambu Lab and contributors (BambuStudio fork basis)
+           2011-2024 PrusaResearch and contributors (Slic3r/PrusaSlicer basis)
+License: AGPL-3.0-only
+ OrcaSlicer is licensed under the GNU Affero General Public License,
+ version 3. The full text is available at /usr/share/common-licenses/AGPL-3
+ on Debian systems and in the upstream LICENSE.txt.
+
+Files: debian/*
+Copyright: 2026 Helmut Adrigan <helmut.adrigan@chello.at>
+License: AGPL-3.0-only
