@@ -1,0 +1,56 @@
+Source: orcaslicer-dev
+Section: graphics
+Priority: optional
+Maintainer: Helmut Adrigan <helmut.adrigan@chello.at>
+Build-Depends:
+ debhelper-compat (= 13),
+ cmake,
+ ninja-build,
+ build-essential,
+ autoconf,
+ libtool,
+ texinfo,
+ gettext,
+ file,
+ wget,
+ git,
+ clang,
+ lld,
+ extra-cmake-modules,
+ eglexternalplatform-dev,
+ libcurl4-openssl-dev,
+ libdbus-1-dev,
+ libglew-dev,
+ libgstreamerd-3-dev,
+ libgtk-3-dev,
+ libmspack-dev,
+ libsecret-1-dev,
+ libspnav-dev,
+ libssl-dev,
+ libudev-dev,
+ libwebkit2gtk-4.1-dev,
+Standards-Version: 4.6.2
+Homepage: https://github.com/OrcaSlicer/OrcaSlicer
+
+Package: orcaslicer-dev
+Architecture: amd64
+Depends:
+ ${shlibs:Depends},
+ ${misc:Depends},
+ libwebkit2gtk-4.0-37 | libwebkit2gtk-4.1-0,
+ libgtk-3-0,
+ libsecret-1-0,
+ libgstreamerd-3-0,
+ libcurl4,
+ libopengl0,
+ libglu1-mesa,
+Description: OrcaSlicer development build (parallel-installable with Flathub stable)
+ OrcaSlicer is a 3D-printer slicer based on Bambu Studio / PrusaSlicer
+ with additional features and improvements.
+ .
+ This package installs a self-contained development build to
+ /opt/orcaslicer-dev/, with a launcher symlink at /usr/bin/orcaslicer-dev.
+ .
+ It is intended to coexist with the official stable Flathub install at
+ com.orcaslicer.OrcaSlicer. Configuration is stored separately in
+ ~/.config/OrcaSlicer/ (independent of the Flatpak's config directory).
