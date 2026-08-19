@@ -1,3 +1,31 @@
+orcaslicer-dev (2.4.0~dev-2026.08.19-1) unstable; urgency=medium
+
+  * CLI: walk external configs' inherits chain (fixes silently-dropped
+    grandparent values).
+
+    Configs loaded via --load-settings / --load-filaments came in as bare
+    leaf JSONs; the CLI's load_config_file stopped at load_from_json. Any
+    key that only existed farther up the inherits chain (parent,
+    grandparent, ...) was invisible in the resolved config, and downstream
+    slicing read the schema default (0 for numeric vectors). Reported by
+    slicer-chat: a Prusa Generic PLA @CORE One (chamber_temperature=[20])
+    → @CORE One HF 0.4 (no chamber) → user ANYCUBIC PLA (no chamber) chain
+    sliced with ; chamber_temperature = 0. On a printer whose start
+    g-code expands [chamber_temperature], this silently un-vented every
+    PLA except HS. The existing BBL branch loads
+    resources_dir/profiles/BBL/*_full/ files that are already flattened,
+    so BBL never showed the bug — any non-BBL vendor did.
+
+    Fix: after load_from_json, walk `inherits` upward through the known
+    preset roots (datadir/user/*/, datadir/system/*/,
+    resources_dir/profiles/*/), collect ancestors, and cascade-apply
+    oldest→leaf onto the loaded config. Mirrors the GUI PresetCollection
+    load path. Depth-capped at 8 (defensive), missing-parent warns +
+    stops walking (matches CLI's lenience with externally-loaded
+    configs), no-op when inherits is empty.
+
+ -- Packerlschupfer <83344883+packerlschupfer@users.noreply.github.com>  Tue, 19 Aug 2026 22:00:00 +0200
+
 orcaslicer-dev (2.4.0~dev-2026.08.08-1) unstable; urgency=medium
 
   * CLI: restore --strict and --inspect-mesh option registrations.
