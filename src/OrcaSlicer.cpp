@@ -51,6 +51,7 @@ using namespace nlohmann;
 
 #include "libslic3r/libslic3r.h"
 #include "libslic3r/Config.hpp"
+#include "libslic3r/PlaceholderParser.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "slic3r/Utils/CalibCLI.hpp"
 #include "slic3r/Utils/MeshOrient.hpp"
@@ -2829,6 +2830,49 @@ int CLI::run(int argc, char **argv)
     for (int index = 0; index < upward_compatible_printers.size(); index++) {
         BOOST_LOG_TRIVIAL(info) << boost::format("index %1%, upward_compatible_printers %2%")%index %upward_compatible_printers[index];
     }
+    //ORCA: an empty `compatible_printers` list is NOT a constraint.
+    //
+    //      Preset.cpp's is_compatible_with_printer() treats a missing or empty
+    //      `compatible_printers` list as "no explicit constraint" and falls back to
+    //      evaluating `compatible_printers_condition`. This CLI path only ever compared
+    //      the explicit list, so any process preset that expresses compatibility through
+    //      the condition instead was reported incompatible and the slice died with
+    //      CLI_PROCESS_NOT_COMPATIBLE (-17). That is every vendor except BBL, whose
+    //      resources/profiles/BBL/process_full/ files ship a pre-flattened
+    //      `compatible_printers` list -- which is why BBL never showed the bug.
+    //
+    //      Mirror the GUI semantics rather than blanket-allowing an empty list: a
+    //      genuinely incompatible pair (e.g. an @MK4S process on a CORE One printer)
+    //      must still be rejected, and only the condition can tell the two apart.
+    auto compatible_by_condition = [](const std::vector<std::string> &compatible_printers,
+                                      const DynamicPrintConfig       &process_config,
+                                      const DynamicPrintConfig       &printer_config,
+                                      const std::string              &printer_name) -> bool {
+        if (!compatible_printers.empty())
+            // Explicit list present; the caller already checked it and it did not match.
+            return false;
+        const ConfigOptionString *condition = process_config.option<ConfigOptionString>("compatible_printers_condition");
+        if ((condition == nullptr) || condition->value.empty())
+            // Neither a list nor a condition -> the process constrains nothing.
+            return true;
+        DynamicConfig extra_config;
+        extra_config.set_key_value("printer_preset", new ConfigOptionString(printer_name));
+        if (const ConfigOption *nozzle_diameter = printer_config.option("nozzle_diameter"))
+            extra_config.set_key_value("num_extruders",
+                new ConfigOptionInt((int) static_cast<const ConfigOptionFloats *>(nozzle_diameter)->values.size()));
+        try {
+            bool compatible = PlaceholderParser::evaluate_boolean_expression(condition->value, printer_config, &extra_config);
+            BOOST_LOG_TRIVIAL(info) << boost::format("evaluated compatible_printers_condition \"%1%\" against printer %2%: %3%")
+                %condition->value %printer_name %compatible;
+            return compatible;
+        } catch (const std::runtime_error &err) {
+            //FIXME same lenient policy as is_compatible_with_printer(): a malformed
+            //      condition must not block the slice.
+            BOOST_LOG_TRIVIAL(warning) << boost::format("parsing error of compatible_printers_condition \"%1%\": %2%, treating as compatible")
+                %condition->value %err.what();
+            return true;
+        }
+    };
     if (!new_printer_name.empty()) {
         if (!new_process_name.empty()) {
             for (int index = 0; index < new_print_compatible_printers.size(); index++) {
@@ -2837,6 +2881,8 @@ int CLI::run(int argc, char **argv)
                     break;
                 }
             }
+            if (!process_compatible)
+                process_compatible = compatible_by_condition(new_print_compatible_printers, load_process_config, load_machine_config, new_printer_name);
             BOOST_LOG_TRIVIAL(info) << boost::format("new printer %1%, inherited from %2%, new process %3%, inherited from %4% ,compatible %5%")
                 %new_printer_name %new_printer_system_name %new_process_name %new_process_system_name %process_compatible;
         }
@@ -2858,6 +2904,8 @@ int CLI::run(int argc, char **argv)
                 break;
             }
         }
+        if (!process_compatible)
+            process_compatible = compatible_by_condition(new_print_compatible_printers, load_process_config, m_print_config, current_printer_name);
         BOOST_LOG_TRIVIAL(info) << boost::format("old printer %1%, inherited from %2%, new process %3%, inherited from %4% ,compatible %5%")
             %current_printer_name %current_printer_system_name %new_process_name %new_process_system_name %process_compatible;
     }
