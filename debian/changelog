@@ -1,3 +1,37 @@
+orcaslicer-dev (2.4.0~dev-2026.08.30-1) unstable; urgency=medium
+
+  * CLI: honour compatible_printers_condition (fixes bogus -17 for non-BBL
+    vendors).
+
+    Slicing a Prusa (or Elegoo, Anycubic, Custom, ...) process preset through
+    --load-settings died with CLI_PROCESS_NOT_COMPATIBLE (-17), "The selected
+    printer is not compatible with the process preset in the 3mf.", even for
+    combinations the GUI accepts.
+
+    The CLI's compatibility gate decided on an explicit compatible_printers
+    *name list* only. Those vendors express printer compatibility through
+    compatible_printers_condition instead, e.g. for 0.20mm SPEED @CORE One
+    HF 0.4: printer_notes=~/.*PRINTER_MODEL_COREONE[^_a-zA-Z0-9].*/ and
+    nozzle_diameter[0]==0.4 and printer_notes=~/.*HF_NOZZLE.*/. No
+    compatible_printers key exists anywhere in that inherits chain, so the
+    match loop iterated zero times and the slice was rejected. Only BBL
+    escaped: resources/profiles/BBL/process_full/ ships pre-flattened
+    compatible_printers lists.
+
+    Fix mirrors Preset.cpp's is_compatible_with_printer(), the GUI path: an
+    empty list is "no explicit constraint", so fall back to evaluating
+    compatible_printers_condition via PlaceholderParser. Deliberately not a
+    blanket "empty list => compatible" rescue, which would let genuinely
+    incompatible pairs through (an @MK4S process on a CORE One printer must
+    keep returning -17).
+
+    Verified on 28 slices: 10 previously-broken user presets and 4 Prusa
+    system presets now return 0; 5 presets with explicit lists still return 0
+    with byte-identical g-code; 7 negative controls (wrong model, wrong
+    nozzle, COREONE_L variant) still correctly return -17.
+
+ -- Packerlschupfer <83344883+packerlschupfer@users.noreply.github.com>  Sun, 30 Aug 2026 22:54:34 +0200
+
 orcaslicer-dev (2.4.0~dev-2026.08.19-1) unstable; urgency=medium
 
   * CLI: walk external configs' inherits chain (fixes silently-dropped
