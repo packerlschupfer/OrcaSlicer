@@ -1,3 +1,25 @@
+orcaslicer-dev (2.4.0~dev-2026.08.30-2) unstable; urgency=medium
+
+  * CLI: use is_compatible_with_printer() for the compat checks.
+
+    Supersedes the standalone condition-evaluating lambda shipped in -1.
+    Switches to the approach already filed upstream in PR #13731 section 1:
+    call is_compatible_with_printer(), the same helper the GUI uses, rather
+    than reimplementing its empty-list -> evaluate-condition rule. Covers all
+    four compat checks instead of two, and keeps the local dev branch
+    identical to what is filed upstream so the two cannot drift.
+
+    Verified: stock-profile matrix over two printer models passes 6/6 (four
+    positives -17 -> 0, both cross-model negatives hold at -17), and the
+    28-slice regression suite passes with g-code byte-identical for presets
+    carrying an explicit compatible_printers list.
+
+    Known limitation, unchanged from -1: a condition-only process embedded in
+    a non-BBL 3MF is still rejected on the 3MF-reprocess path, because the
+    full-config capture only resolves for BBL profiles.
+
+ -- Packerlschupfer <83344883+packerlschupfer@users.noreply.github.com>  Sun, 30 Aug 2026 23:27:05 +0200
+
 orcaslicer-dev (2.4.0~dev-2026.08.30-1) unstable; urgency=medium
 
   * CLI: honour compatible_printers_condition (fixes bogus -17 for non-BBL
