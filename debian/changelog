@@ -1,3 +1,34 @@
+orcaslicer-dev (2.4.0~dev-2026.08.30-3) unstable; urgency=medium
+
+  * CLI: evaluate the 3MF's own project config in the compat checks.
+
+    Extends -2 to the two 3MF-reprocess checks. Those read
+    current_process_full_config / current_printer_full_config, populated only
+    from profiles/BBL/{process,machine}_full/; for any other vendor they stay
+    empty and the checks fell back to a literal name match against a
+    compatible_printers list that condition-based profiles do not have.
+
+    Two cases fixed, both measured on a 3MF built from Prusa's condition-only
+    0.20mm SPEED @CORE One HF 0.4:
+      - re-slicing while passing the very printer the 3MF was made for:
+        -17 -> 0
+      - re-slicing while passing a matching new process:               -17 -> 0
+    Negative control holds: a mismatched @MK4S process against the 3MF's
+    CORE One printer still returns -17.
+
+    Fix: when the BBL-only full config is absent, evaluate against
+    m_print_config, which already holds the 3MF's merged project settings and
+    carries compatible_printers_condition plus the embedded printer's
+    printer_notes / nozzle_diameter. This can only turn a false into a true,
+    so no pair accepted today becomes rejected.
+
+    Not addressed here (pre-existing, logged for upstream): supplying a
+    DIFFERENT printer than the 3MF's hits the "switch to new printers, set to
+    compatible" rescue and is accepted unconditionally, so a genuinely
+    incompatible printer succeeds where the correct one used to fail.
+
+ -- Packerlschupfer <83344883+packerlschupfer@users.noreply.github.com>  Sun, 30 Aug 2026 23:50:42 +0200
+
 orcaslicer-dev (2.4.0~dev-2026.08.30-2) unstable; urgency=medium
 
   * CLI: use is_compatible_with_printer() for the compat checks.
