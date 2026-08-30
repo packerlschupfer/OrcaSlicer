@@ -2864,21 +2864,27 @@ int CLI::run(int argc, char **argv)
                 %new_printer_name %new_printer_system_name %new_process_name %new_process_system_name %process_compatible;
         }
         else {
-            //3MF-embedded process vs new printer; fall back to the literal match if the full config was not preserved
-            if (!current_process_full_config.empty())
-                process_compatible = check_compat(current_process_full_config, load_machine_config, new_printer_system_name);
-            else
-                process_compatible = std::find(current_print_compatible_printers.begin(), current_print_compatible_printers.end(), new_printer_system_name) != current_print_compatible_printers.end();
+            //3MF-embedded process vs new printer. current_process_full_config is only populated from
+            //profiles/BBL/process_full/, i.e. for BBL profiles; for every other vendor fall back to the
+            //3MF's own project config, which is already merged into m_print_config above and carries
+            //compatible_printers_condition. Without this a 3MF built from a condition-only process is
+            //rejected when re-sliced with the very printer it was made for.
+            {
+                const DynamicPrintConfig &process_cfg = current_process_full_config.empty() ? m_print_config : current_process_full_config;
+                process_compatible = check_compat(process_cfg, load_machine_config, new_printer_system_name);
+            }
             BOOST_LOG_TRIVIAL(info) << boost::format("new printer %1%, inherited from %2%, old process %3%, inherited from %4% ,compatible %5%")
                 %new_printer_name %new_printer_system_name %current_process_name %current_process_system_name %process_compatible;
         }
     }
     else if (!new_process_name.empty()) {
-        //new process vs 3MF-embedded printer
-        if (!current_printer_full_config.empty())
-            process_compatible = check_compat(load_process_config, current_printer_full_config, current_printer_system_name);
-        else
-            process_compatible = std::find(new_print_compatible_printers.begin(), new_print_compatible_printers.end(), current_printer_system_name) != new_print_compatible_printers.end();
+        //new process vs 3MF-embedded printer. As above, current_printer_full_config only resolves for
+        //BBL profiles; otherwise evaluate against the 3MF's own project config in m_print_config, which
+        //holds the embedded printer's printer_notes / nozzle_diameter.
+        {
+            const DynamicPrintConfig &printer_cfg = current_printer_full_config.empty() ? m_print_config : current_printer_full_config;
+            process_compatible = check_compat(load_process_config, printer_cfg, current_printer_system_name);
+        }
         BOOST_LOG_TRIVIAL(info) << boost::format("old printer %1%, inherited from %2%, new process %3%, inherited from %4% ,compatible %5%")
             %current_printer_name %current_printer_system_name %new_process_name %new_process_system_name %process_compatible;
     }
