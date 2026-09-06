@@ -1,3 +1,40 @@
+orcaslicer-dev (2.4.0~dev-2026.09.06-1) unstable; urgency=medium
+
+  * CLI: keep the inherits walk inside one vendor.
+
+    cli_find_preset_json() returned the first bare-name match across all vendor
+    directories, with no vendor scoping. Base profile names are not unique:
+    fdm_process_common.json ships in 61 bundled vendors with 43 distinct
+    contents, so which file a chain resolved to depended on directory_iterator
+    order rather than on the leaf preset's vendor.
+
+    Concretely, this machine's Prusa printer chain was resolving
+    fdm_machine_common to *Custom's* copy. Those two files differ in 28 keys,
+    including machine_start_gcode, machine_end_gcode, retraction_length and
+    z_hop. It stayed invisible only because the leaf presets explicitly
+    override nearly all of them -- the leaf-explicit rule doing its job.
+
+    The walker now remembers the vendor directory that supplied the previous
+    hop and looks there first, falling back to the original scan when the name
+    is genuinely absent from that vendor, so cross-vendor inheritance
+    (OrcaFilamentLibrary and friends) still resolves.
+
+    Visible output change, and the reason the g-code baseline was regenerated:
+
+      ; machine_min_extruding_rate = 0    ->  0,0
+      ; machine_min_travel_rate    = 0    ->  0,0
+
+    Those two keys are the only ones nothing in the chain overrides. Both
+    values are 0, so this is cosmetic. Note the GUI emits a single element
+    because it calls set_num_extruders() to resize per-extruder vectors to the
+    printer's extruder count; the CLI's normalize_fdm() does not. That gap is
+    pre-existing and separate -- it was previously masked because Custom's file
+    already had one element. Documented in ~/orca-cli-tests/baseline/README.md.
+
+    Regression: 28/28 against the regenerated baseline.
+
+ -- Packerlschupfer <83344883+packerlschupfer@users.noreply.github.com>  Sun, 06 Sep 2026 11:55:21 +0200
+
 orcaslicer-dev (2.4.0~dev-2026.08.30-3) unstable; urgency=medium
 
   * CLI: evaluate the 3MF's own project config in the compat checks.
