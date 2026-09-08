@@ -12054,8 +12054,10 @@ CLIActionsConfigDef::CLIActionsConfigDef()
     def->label = L("Strict mode");
     def->tooltip = L("Fail loudly (exit non-zero) on any warning that today gets silently "
                      "logged: calibrate-type path conflicts, NON_CRITICAL slicing warnings, "
-                     "and CLI calibration prep that fell back to a default. Use this in "
-                     "CI / scripted pipelines that should never ship a subtly broken slice.");
+                     "CLI calibration prep that fell back to a default, and a bed type that "
+                     "was neither given with --curr-bed-type nor declared by the printer. "
+                     "Use this in CI / scripted pipelines that should never ship a subtly "
+                     "broken slice.");
     def->set_default_value(new ConfigOptionBool(false));
 
     def = this->add("normative_check", coBool);

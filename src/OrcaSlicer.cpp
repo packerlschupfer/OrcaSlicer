@@ -1195,6 +1195,25 @@ static void load_downward_settings_list_from_config(std::string config_file, std
     }
 }
 
+//ORCA (fork-local): does this printer preset actually declare a bed type, as opposed to
+//      Preset::get_default_bed_type() falling back by printer model id and finally to btPEI?
+//      That function returns a BedType either way, so the provenance cannot be recovered
+//      from its result; this mirrors its acceptance test on `default_bed_type`. Used by the
+//      --strict guard in CLI::run -- a declared value is an answer, a fallback is a guess.
+static bool cli_printer_declares_bed_type(const DynamicPrintConfig &cfg)
+{
+    if (! cfg.has("default_bed_type"))
+        return false;
+    const std::string &str = cfg.opt_string("default_bed_type");
+    if (str.empty())
+        return false;
+    BedType bed_type;
+    if (ConfigOptionEnum<BedType>::from_string(str, bed_type) && bed_type > btDefault && bed_type < btCount)
+        return true;
+    const int legacy = atoi(str.c_str()); // legacy integer spelling, also accepted above
+    return legacy > 0 && legacy < int(btCount);
+}
+
 int CLI::run(int argc, char **argv)
 {
     // Mark the main thread for the debugger and for runtime checks.
@@ -3283,6 +3302,7 @@ int CLI::run(int argc, char **argv)
     //      --curr-bed-type, and no project supplied one (an empty current_printer_name
     //      means no 3MF was loaded). An explicit choice therefore always wins.
     if (!new_printer_name.empty() && current_printer_name.empty() && !m_config.has("curr_bed_type")) {
+        bool          bed_type_declared = false;
         std::string   bundle_error;
         PresetBundle *bundle = ensure_cli_preset_bundle(bundle_error);
         if (bundle == nullptr) {
@@ -3296,12 +3316,31 @@ int CLI::run(int argc, char **argv)
                 shell.config   = load_machine_config;
                 printer_preset = &shell;
             }
-            BedType bed_type = printer_preset->get_default_bed_type(bundle);
+            bed_type_declared = cli_printer_declares_bed_type(printer_preset->config);
+            BedType bed_type  = printer_preset->get_default_bed_type(bundle);
             if (bed_type > btDefault && bed_type < btCount) {
                 m_print_config.set_key_value("curr_bed_type", new ConfigOptionEnum<BedType>(bed_type));
-                BOOST_LOG_TRIVIAL(info) << boost::format("CLI: curr_bed_type defaulted from printer '%1%' to %2%")
-                                               % new_printer_name % int(bed_type);
+                BOOST_LOG_TRIVIAL(info) << boost::format("CLI: curr_bed_type defaulted from printer '%1%' to %2% (%3%)")
+                                               % new_printer_name % int(bed_type)
+                                               % (bed_type_declared ? "declared by the printer" : "fallback");
             }
+        }
+
+        //ORCA (fork-local): --strict -- one printer takes many build plates, and the
+        //      filament carries a temperature for each of them, so with no plate named
+        //      anywhere the seed above is a guess. Getting it wrong is silent and costs
+        //      the first layer. Refuse rather than guess, unless the printer itself
+        //      declares a plate -- that is an answer, and the GUI would use it too.
+        if (! bed_type_declared && m_config.opt_bool("strict")) {
+            std::string choices;
+            if (const ConfigOptionDef *def = print_config_def.get("curr_bed_type"))
+                for (const std::string &v : def->enum_values)
+                    choices += (choices.empty() ? "" : ", ") + v;
+            BOOST_LOG_TRIVIAL(error) << boost::format("--strict: no bed type given and printer '%1%' does not "
+                                                      "declare one. Pass --curr-bed-type <%2%>.")
+                                            % new_printer_name % choices;
+            record_exit_reson(outfile_dir, CLI_INVALID_PARAMS, 0, cli_errors[CLI_INVALID_PARAMS], sliced_info);
+            flush_and_exit(CLI_INVALID_PARAMS);
         }
     }
 
