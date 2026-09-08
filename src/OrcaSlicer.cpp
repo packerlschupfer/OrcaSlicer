@@ -3274,9 +3274,10 @@ int CLI::run(int argc, char **argv)
     //      Preset::get_default_bed_type(), which reads the printer's `default_bed_type`
     //      and otherwise falls back by printer model (finally btPEI). The CLI never did,
     //      so every CLI slice used the schema default -- Cool Plate -- no matter which
-    //      printer was selected, silently picking that plate's bed temperature. 55
-    //      bundled machine profiles declare `default_bed_type` (every Bambu among them),
-    //      so CLI output diverged from the GUI for all of them.
+    //      printer was selected, silently picking that plate's bed temperature. 18 bundled
+    //      machine profiles declare `default_bed_type` (12 with a usable value); every
+    //      other printer, Bambu included, relies on get_default_bed_type()'s model-id
+    //      fallback. The CLI honoured neither, so it diverged from the GUI for all of them.
     //
     //      Applied only when a printer came from --load-settings, the user did not pass
     //      --curr-bed-type, and no project supplied one (an empty current_printer_name
