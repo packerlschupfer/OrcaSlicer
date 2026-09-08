@@ -1,3 +1,40 @@
+orcaslicer-dev (2.4.0~dev-2026.09.08-1) unstable; urgency=medium
+
+  * Rebase onto upstream main 58bf267fd; drop our inherits walker.
+
+    Upstream merged PR #15438 (bcb4f17), which resolves the --load-settings
+    inherits chain through the canonical PresetBundle with vendor-manifest
+    scoping. Our own cli_resolve_inherits_chain / cli_find_preset_json were
+    dropped in this rebase: keeping them would have resolved inheritance twice,
+    ours first with a bare-name lookup that is unsafe across the 61 bundled
+    vendors shipping fdm_process_common.json in 43 distinct variants.
+
+    40 of our 42 commits cherry-picked; one .gitignore conflict resolved as a
+    union. Verified none of our 64 option registrations were lost (the failure
+    mode of the 2026-08-01 rebase) and every restored flag appears in --help.
+
+  * Includes our two open upstream PRs: #15449 (evaluate
+    compatible_printers_condition in the compat checks) and #15595 (record user
+    overrides in different_settings_to_system so CLI-exported 3MFs do not show
+    spurious "unsaved changes" in the GUI).
+
+  * BEHAVIOUR CHANGE, requires a CLI flag from now on.
+
+    curr_bed_type is a project setting and appears in no preset option list.
+    Our process preset carries one anyway; the old untyped CLI merge honoured
+    it, upstream's typed resolution correctly ignores it. CLI slicing therefore
+    falls back to the schema default Cool Plate, taking PETG's first layer from
+    65 C to 60 C.
+
+    Pass --curr-bed-type "High Temp Plate" (dashes; the underscore form is
+    rejected). The regression kit now does this by default. The GUI is
+    unaffected -- bed type is chosen in the plater there.
+
+    Regression: 39/39 across the four suites after re-baselining the g-code
+    reference against this build.
+
+ -- Packerlschupfer <83344883+packerlschupfer@users.noreply.github.com>  Tue, 08 Sep 2026 19:45:41 +0200
+
 orcaslicer-dev (2.4.0~dev-2026.09.06-1) unstable; urgency=medium
 
   * CLI: keep the inherits walk inside one vendor.
