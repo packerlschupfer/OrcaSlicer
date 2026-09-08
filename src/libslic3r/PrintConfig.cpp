@@ -11995,13 +11995,14 @@ CLIActionsConfigDef::CLIActionsConfigDef()
     // failed run, and records strict_mode in result.json so consumers can tell the modes apart.
     def = this->add("strict", coBool);
     def->label = L("Strict mode");
-    def->tooltip = L("Exit non-zero when slicing raises a non-critical warning that is "
-                     "otherwise only logged, such as a model that needs support while "
-                     "support is disabled. Use this in CI or scripted pipelines that should "
-                     "never ship a subtly broken slice. Each such warning is also listed "
-                     "with a stable class in the `warnings` array of result.json, which is "
-                     "written on Linux only. Cannot be combined with --no-check, which skips "
-                     "the support check.");
+    def->tooltip = L("Exit non-zero when a run raises a warning that is otherwise only logged: "
+                     "a model that needs support while support is disabled, a calibrate-type "
+                     "path conflict, CLI calibration prep that fell back to a default, and a bed "
+                     "type that was neither given with --curr-bed-type nor declared by the "
+                     "printer. Use this in CI or scripted pipelines that should never ship a "
+                     "subtly broken slice. Each such warning is also listed with a stable class "
+                     "in the `warnings` array of result.json, which is written on Linux only. "
+                     "Cannot be combined with --no-check, which skips the support check.");
     def->set_default_value(new ConfigOptionBool(false));
 
     def = this->add("normative_check", coBool);
