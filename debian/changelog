@@ -1,3 +1,28 @@
+orcaslicer-dev (2.4.0~dev-2026.09.08-2) unstable; urgency=medium
+
+  * CLI: default curr_bed_type from the printer (upstream PR #15598).
+
+    The GUI seeds the project's bed type from the printer via
+    Preset::get_default_bed_type(); the CLI never did, so every CLI slice used
+    the schema default Cool Plate regardless of machine. Measured against a
+    control build of the same commit: Qidi X-Plus 5 (declares Textured PEI
+    Plate) first layer bed 45 -> 60 C; Bambu X1 Carbon (model fallback) 35 ->
+    55 C.
+
+    For this machine the fallback is btPEI, which is "High Temp Plate" -- the
+    sheet normally in use -- so CLI slicing now defaults to bed 65 with no flag,
+    where -1 needed --curr-bed-type "High Temp Plate" to avoid 60.
+
+    NOTE this is a DEFAULT, not detection. Bed type is per build plate
+    (PartPlate::get_bed_type), falling back to the project's curr_bed_type,
+    which the printer only seeds. When a different sheet is clipped on, pass
+    --curr-bed-type explicitly -- the slicer cannot know which sheet is
+    physically installed.
+
+    Regression: 39/39 across the four suites.
+
+ -- Packerlschupfer <83344883+packerlschupfer@users.noreply.github.com>  Tue, 08 Sep 2026 20:24:05 +0200
+
 orcaslicer-dev (2.4.0~dev-2026.09.08-1) unstable; urgency=medium
 
   * Rebase onto upstream main 58bf267fd; drop our inherits walker.
