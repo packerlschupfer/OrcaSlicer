@@ -1,3 +1,34 @@
+orcaslicer-dev (2.4.0~dev-2026.09.08-3) unstable; urgency=medium
+
+  * CLI: --strict refuses to guess the bed type (fork-local).
+
+    A printer takes many build plates and the filament carries a temperature
+    for each, so the plate is a property of the run, not of the printer. -2
+    made the CLI seed curr_bed_type from the printer as the GUI does, which is
+    right as an interactive default but still a guess when nobody named a
+    plate: for every printer that does not declare default_bed_type,
+    Preset::get_default_bed_type() falls through its model-id map to btPEI.
+
+    Under --strict that now fails with CLI_INVALID_PARAMS instead. The guard is
+    satisfied by an explicit --curr-bed-type, by a plate carried in a loaded
+    project, or by a printer that declares default_bed_type -- a declared value
+    is an answer, and the GUI would use it too. Without --strict nothing
+    changes; the seed additionally logs whether it was declared or a fallback.
+
+    Measured on stock Prusa Generic PETG the plates give first-layer bed
+    85 / 60 / 45 C. Note the 45 is not a calibration: textured_plate_temp is
+    set by 0 of 272 installed Prusa system filaments and 0 of 16 user
+    filaments, so it resolves to the schema default.
+
+  * CLI: correct the profile counts in the curr_bed_type comment.
+
+    The comment claimed 55 bundled machine profiles declare default_bed_type,
+    "every Bambu among them". Both halves were wrong: 18 declare the key, 12
+    with a usable value, and no Bambu is among them. Comment only; the same
+    correction was pushed to PR #15598.
+
+ -- Packerlschupfer <83344883+packerlschupfer@users.noreply.github.com>  Tue, 08 Sep 2026 22:44:49 +0200
+
 orcaslicer-dev (2.4.0~dev-2026.09.08-2) unstable; urgency=medium
 
   * CLI: default curr_bed_type from the printer (upstream PR #15598).
