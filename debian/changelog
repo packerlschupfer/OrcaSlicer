@@ -1,3 +1,31 @@
+orcaslicer-dev (2.4.0~dev-2026.09.09-1) unstable; urgency=medium
+
+  * Preset: retry presets whose parent is loaded in the same pass.
+
+    PresetCollection::load_presets() resolves `inherits` with find_preset2(),
+    which searches m_presets -- but the presets of a pass are staged in a local
+    deque and merged only after the loop, so a preset could not see a parent
+    from its own directory and was discarded with "can not find parent". System
+    parents worked only because they load in an earlier call.
+
+    On this datadir that killed 4 of 16 user filaments -- ANYCUBIC PETG HS,
+    PETG Small Parts, PETG Tarock (all inheriting ANYCUBIC PETG) and PLA HS
+    Summer (inheriting ANYCUBIC PLA HS). Since upstream #15438 routes
+    --load-settings through the bundle, they failed with -5 "Preset was not
+    found in the loaded bundle"; before that our own walker resolved them. The
+    GUI shares this loader, so they were missing there too.
+
+    Now deferred and retried after each pass is published, repeating while a
+    pass still resolves something, so chains of any depth load regardless of
+    directory order. A pass that resolves nothing leaves genuine missing
+    parents, reported exactly as before.
+
+    Verified: all four slice again (PETG family bed 65, PLA HS Summer bed 60),
+    libslic3r suite 354 cases / 58405 assertions pass, CLI kit 45/45.
+    Filed upstream as issue #15604.
+
+ -- Packerlschupfer <83344883+packerlschupfer@users.noreply.github.com>  Wed, 09 Sep 2026 18:21:13 +0200
+
 orcaslicer-dev (2.4.0~dev-2026.09.08-3) unstable; urgency=medium
 
   * CLI: --strict refuses to guess the bed type (fork-local).
