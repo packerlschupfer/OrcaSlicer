@@ -1,3 +1,34 @@
+orcaslicer-dev (2.4.0~dev-2026.09.11-3) unstable; urgency=medium
+
+  * CLI: refuse a printer switch the compatibility check rejects, unless the
+    3MF's upward_compatible_machine list names the new printer (upstream
+    issue #15450, PR #15647).
+
+    Re-slicing a 3MF with a different printer entered a rescue block whenever
+    the compatibility check said no, and overturned that verdict
+    unconditionally when the 3MF kept its own process -- before consulting
+    the vendor list, so a list omitting the new printer was accepted too. The
+    slice returned 0 with a process tuned for another machine, relabelled
+    "(auto)". The rescue dates from when the check could not evaluate
+    compatible_printers_condition and rejected every condition-based process.
+
+    Now: list names the printer -> accepted as before; list omits it -> -16;
+    no list with the 3MF's process kept -> -15 (the commented-out branch,
+    restored), whose message now says to supply a process with
+    --load-settings. A re-target the check accepts -- e.g. a stock CORE One
+    project onto the Prusa Core One (Klipper) preset -- never reaches this
+    and is unaffected.
+
+    BEHAVIOUR CHANGE: re-slicing a CORE One 3MF with an MK4S used to succeed
+    with "(auto)" in print_settings_id; it now exits -15 and writes no
+    g-code. "(auto)" now only appears on a vendor-listed switch.
+
+  * CLI: the -15 message names the failure and the remedy.
+
+    CLI kit 64/64 (mf_test 15 checks).
+
+ -- Packerlschupfer <83344883+packerlschupfer@users.noreply.github.com>  Fri, 11 Sep 2026 21:54:22 +0200
+
 orcaslicer-dev (2.4.0~dev-2026.09.11-2) unstable; urgency=medium
 
   * CLI: never overwrite a real compat key with an empty renamed one
