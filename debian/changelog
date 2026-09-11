@@ -1,3 +1,24 @@
+orcaslicer-dev (2.4.0~dev-2026.09.11-4) unstable; urgency=medium
+
+  * CLI: judge command-line overrides the way the value is read (upstream
+    PR #15642, from review).
+
+    - A list override equal to every loaded value (--nozzle-temperature 245
+      against 245,245,245 on a multi-filament project) is no longer recorded
+      as a change: lists compare entry by entry, a missing entry read as the
+      first, as get_at() reads it.
+    - The "recorded" log line fires only when a column took the key.
+    - A key the loaded config lacks is still ALWAYS recorded, even at its
+      built-in default: on reopen the GUI restores unlisted keys from the
+      system preset, which may differ (sparse_infill_density: default 20%,
+      Prusa system 15%). Comparing against the default was tried and
+      rejected -- it would revert a typed 20% to 15% on an older 3MF.
+
+    Reviewed twice before shipping. CLI kit 71/71 (ds_override_test now 16,
+    validated against both the previous head and the rejected variant).
+
+ -- Packerlschupfer <83344883+packerlschupfer@users.noreply.github.com>  Fri, 11 Sep 2026 23:08:51 +0200
+
 orcaslicer-dev (2.4.0~dev-2026.09.11-3) unstable; urgency=medium
 
   * CLI: refuse a printer switch the compatibility check rejects, unless the
