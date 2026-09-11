@@ -1,3 +1,35 @@
+orcaslicer-dev (2.4.0~dev-2026.09.11-1) unstable; urgency=medium
+
+  * CLI: translate the 3MF's renamed compatibility keys before the compat
+    check (upstream PR #15449, from review).
+
+    A project 3MF does not carry compatible_printers / _condition:
+    construct_full_config() re-emits them as print_compatible_printers and
+    compatible_machine_expression_group, renamed back only on the GUI's load
+    path. The CLI's 3MF fallback therefore saw no constraint and accepted
+    every printer -- and by accepting, skipped the machine-switch block, so
+    the exported project stayed marked compatible only with its original
+    printer. Measured on a GUI-written project re-targeted CORE One -> MK4S:
+    before, compatible 1 and print_compatible_printers []; after, compatible
+    0, "switch to new printers", and the MK4S recorded.
+
+    Adds a config-level is_compatible_with_printer() overload in Preset.cpp.
+
+  * CLI: diff the filament slot before load_default_gcodes_to_config
+    (upstream PR #15595, from review). Consistency with the process and
+    machine slots; not an observable defect in practice.
+
+  * CLI: record command-line overrides in different_settings_to_system
+    (upstream PR #15642). --sparse-infill-density 25% and the like are now
+    marked as modified in an exported project, attributed to the column of
+    the preset type that owns them, so the GUI no longer reverts them to the
+    system value on reopen. Only keys the override actually changed.
+
+    Regression: CLI kit 57/57 (mf_test now covers GUI-shaped 3MFs;
+    ds_override_test is new).
+
+ -- Packerlschupfer <83344883+packerlschupfer@users.noreply.github.com>  Fri, 11 Sep 2026 18:51:36 +0200
+
 orcaslicer-dev (2.4.0~dev-2026.09.09-1) unstable; urgency=medium
 
   * Preset: retry presets whose parent is loaded in the same pass.
