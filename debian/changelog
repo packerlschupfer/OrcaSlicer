@@ -1,3 +1,26 @@
+orcaslicer-dev (2.4.0~dev-2026.09.11-2) unstable; urgency=medium
+
+  * CLI: never overwrite a real compat key with an empty renamed one
+    (upstream PR #15449). Fixes a regression introduced in 09.11-1.
+
+    09.11-1 translated compatible_machine_expression_group[0] into
+    compatible_printers_condition whenever the group vector was non-empty. A
+    project the CLI exported itself carries the real condition AND an
+    all-empty group, so the valid condition was overwritten with "" and every
+    printer was accepted: re-slicing a CORE One project with an MK4S gave
+    "compatible 1", skipped the machine-switch path, and dropped the (auto)
+    suffix that marks a substituted process. GUI-saved projects were fixed by
+    09.11-1; CLI-exported ones were broken by it.
+
+    Raw keys now win whenever they carry something; the renamed ones are only
+    a fallback, and an empty value is never written over a real one. Both
+    project shapes now behave: compatible 0, switch path taken, (auto) back.
+
+    Found by a peer session re-testing the installed build. CLI kit 59/59;
+    mf_test gained a case per project shape, asserting on the export.
+
+ -- Packerlschupfer <83344883+packerlschupfer@users.noreply.github.com>  Fri, 11 Sep 2026 19:09:35 +0200
+
 orcaslicer-dev (2.4.0~dev-2026.09.11-1) unstable; urgency=medium
 
   * CLI: translate the 3MF's renamed compatibility keys before the compat
