@@ -1,3 +1,35 @@
+orcaslicer-dev (2.4.0~dev-2026.09.12-1) unstable; urgency=medium
+
+  * Http: probe the CA bundle without throwing on an unreadable path
+    (upstream issue #15653, PR #15654).
+
+    CurlGlobalInit() probed the OpenSSL default cert file with the throwing
+    fs::exists overload. That overload returns false only for "not found";
+    EACCES throws, the exception escaped the constructor, and the GUI
+    terminated at startup before reaching the CA_BUNDLES fallback two lines
+    below.
+
+    Our builds are SLIC3R_STATIC, which bakes OPENSSLDIR into the binary as
+    the deps prefix under /home/mrnice/git/OrcaSlicer. On any machine where
+    that path exists but is not traversable -- i.e. for every user except
+    mrnice -- the GUI died on launch:
+
+      Unhandled standard exception ... boost::filesystem::status:
+      Permission denied [system:13]: ".../cert.pem"
+
+    That is why the fork was unusable for bruno on cadix, where our .deb is
+    installed system-wide. It is off the build USER, not the build host: the
+    same binary starts fine for mrnice on the same machine. The CLI never
+    reaches this code, which is why no CLI test ever saw it.
+
+    Now uses the error_code overload at both probe sites, which reports false
+    for an unreadable path and falls through to the distro CA bundle as
+    intended. Verified in a headless GNOME session with SSL_CERT_FILE pointed
+    into a chmod 000 directory: unpatched, no window after 60s and the
+    exception above; patched, window in 5s and no filesystem_error.
+
+ -- Packerlschupfer <83344883+packerlschupfer@users.noreply.github.com>  Sat, 12 Sep 2026 12:51:27 +0200
+
 orcaslicer-dev (2.4.0~dev-2026.09.11-4) unstable; urgency=medium
 
   * CLI: judge command-line overrides the way the value is read (upstream
