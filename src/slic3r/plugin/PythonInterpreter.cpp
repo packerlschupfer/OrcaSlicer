@@ -329,11 +329,15 @@ void log_and_restore_python_stdio()
 
 bool valid_python_home(const boost::filesystem::path& candidate)
 {
+    // Probe without throwing: a candidate may exist while being unreachable for the
+    // current user, and the throwing overload would abort the whole search instead
+    // of moving on to the next candidate.
+    boost::system::error_code ec;
 #ifdef _WIN32
-    return boost::filesystem::exists(candidate / "Lib" / "encodings") &&
-           (boost::filesystem::exists(candidate / PYTHON_DLL) || boost::filesystem::exists(candidate / PYTHON_DEBUG_DLL));
+    return boost::filesystem::exists(candidate / "Lib" / "encodings", ec) &&
+           (boost::filesystem::exists(candidate / PYTHON_DLL, ec) || boost::filesystem::exists(candidate / PYTHON_DEBUG_DLL, ec));
 #else
-    return boost::filesystem::exists(candidate / "lib" / PYTHON_STDLIB_DIR / "encodings");
+    return boost::filesystem::exists(candidate / "lib" / PYTHON_STDLIB_DIR / "encodings", ec);
 #endif
 }
 
@@ -396,8 +400,9 @@ boost::filesystem::path find_python_executable(const boost::filesystem::path& py
     };
 #endif
 
+    boost::system::error_code ec;
     for (const fs::path& candidate : candidates) {
-        if (fs::exists(candidate) && fs::is_regular_file(candidate))
+        if (fs::exists(candidate, ec) && fs::is_regular_file(candidate, ec))
             return candidate;
     }
 
@@ -436,22 +441,47 @@ std::string PythonInterpreter::bundled_uv_path()
 {
     namespace fs = boost::filesystem;
 
-    const fs::path configured_uv = ORCA_BUNDLED_UV_EXECUTABLE;
-    if (!configured_uv.empty() && fs::exists(configured_uv) && fs::is_regular_file(configured_uv))
-        return configured_uv.string();
+    // Shipped locations first, as find_bundled_python_home() already prefers its
+    // install-relative candidates over ORCA_BUNDLED_PYTHON_ROOT: <resources>/tools/uv
+    // covers the install() and AppImage layouts, <binary dir>/tools/uv the macOS bundle
+    // (Contents/MacOS/tools/uv) and build-tree runs, which is where src/CMakeLists.txt
+    // copies it. Windows build-tree runs and Xcode non-bundle builds stage nothing those
+    // two candidates can find, so there the baked path below is the one that answers.
+    const std::string     uv_exe    = executable_name("uv");
+    const std::string     resources = resources_dir();
+    std::vector<fs::path> candidates;
+    // Skip an empty resources_dir(): the join would collapse to a CWD-relative
+    // "tools/uv/uv", and what this function returns is later executed.
+    if (!resources.empty())
+        candidates.emplace_back(fs::path(resources) / "tools" / "uv" / uv_exe);
+    candidates.emplace_back(boost::dll::program_location().parent_path() / "tools" / "uv" / uv_exe);
 
-    // <binary dir>/tools/uv covers the macOS bundle (Contents/MacOS/tools/uv)
-    // and build-tree runs; <resources>/tools/uv covers the install() and
-    // AppImage layouts.
-    const std::string uv_exe               = executable_name("uv");
-    const std::vector<fs::path> candidates = {
-        fs::path(resources_dir()) / "tools" / "uv" / uv_exe,
-        boost::dll::program_location().parent_path() / "tools" / "uv" / uv_exe,
-    };
-
+    boost::system::error_code ec;
     for (const fs::path& candidate : candidates) {
-        if (fs::exists(candidate) && fs::is_regular_file(candidate))
+        if (fs::exists(candidate, ec) && fs::is_regular_file(candidate, ec))
             return candidate.string();
+    }
+
+    // ORCA_BUNDLED_UV_EXECUTABLE is an absolute path into the build tree, fixed at
+    // configure time, so it is a last resort rather than the first choice: probing it
+    // first lets the builder's own tree win over the copy that shipped, and on a
+    // machine where that path exists but cannot be traversed the throwing overload
+    // abandoned the search instead of reaching the candidates above.
+    const fs::path configured_uv = ORCA_BUNDLED_UV_EXECUTABLE;
+    if (!configured_uv.empty()) {
+        if (fs::exists(configured_uv, ec) && fs::is_regular_file(configured_uv, ec))
+            return configured_uv.string();
+        // Not finding it is ordinary and stays silent. Note exists(p, ec) reports a
+        // missing path through ec (ENOENT, or ENOTDIR for a non-directory component),
+        // not only through its return value, so testing ec alone would warn on every
+        // end-user launch. Being unable to LOOK is worth a warning: the non-throwing
+        // probe is otherwise indistinguishable from a missing file, and that is the
+        // diagnostic the throwing overload used to provide. It cannot be debug level,
+        // which set_logging_level() filters out whenever the version contains "dev".
+        if (ec && ec != boost::system::errc::no_such_file_or_directory &&
+                  ec != boost::system::errc::not_a_directory)
+            BOOST_LOG_TRIVIAL(warning) << "bundled_uv_path: cannot probe " << configured_uv.string()
+                                       << " (" << ec.message() << ")";
     }
 
     return {};
