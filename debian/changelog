@@ -1,3 +1,51 @@
+orcaslicer-dev (2.4.0~dev-2026.09.12-2) unstable; urgency=medium
+
+  * Plugins: find the bundled uv and Python without throwing, shipped copies
+    first.
+
+    PythonInterpreter::initialize() logs which uv it found, and
+    bundled_uv_path() probed ORCA_BUNDLED_UV_EXECUTABLE -- an absolute path
+    into the build tree, fixed at configure time -- with the throwing
+    fs::exists overload. Where that path exists but cannot be traversed the
+    probe raised filesystem_error out of an optional log statement, which
+    unwound into initialize()'s handler and disabled the interpreter:
+
+      [error] Exception initializing Python: boost::filesystem::status:
+      Permission denied [system:13]: ".../build/.uv/0.11.21/uv"
+
+    Python-backed features then went quiet for anyone who is not the build
+    user on a machine where the build tree exists -- bruno on cadix, the same
+    shape as the cert.pem crash fixed in -1, and observed there in both
+    builds. Where the path is merely absent, as on any end-user machine, the
+    fallback already answered.
+
+    Five probes across three functions take the error_code overloads. The
+    shipped copies under resources/tools/uv are now tried before the baked
+    path rather than after, which is the order find_bundled_python_home()
+    already prefers for the interpreter, and a baked path that cannot be
+    probed is logged as a warning instead of being indistinguishable from a
+    missing file.
+
+  * 3mf: never discard a backup whose lock could not be read.
+
+    has_restore_data() tells its caller to delete a crashed session's backup
+    unless origin is "<lock>". A lock.txt that existed but could not be read
+    threw out of the function, and one holding no pid returned false leaving
+    origin empty, so the caller removed a directory it had never examined.
+    Measured with lock.txt at mode 000 in a writable directory: exists()
+    returns true, the read throws, and the .3mf is deleted.
+
+    Every way of failing to read the lock now claims it. The .3mf probe also
+    distinguishes "absent", which stays collectable so stale backups are
+    still cleaned up, from "could not look", which declines; ENOENT and
+    ENOTDIR are exempted explicitly because exists(p, ec) reports absence
+    through ec as well as through its return value.
+
+    Covered by six sections in tests/libslic3r/test_3mf.cpp, four of which
+    fail without this change.
+
+ -- Packerlschupfer <83344883+packerlschupfer@users.noreply.github.com>  Sat, 12 Sep 2026 22:38:04 +0200
+
 orcaslicer-dev (2.4.0~dev-2026.09.12-1) unstable; urgency=medium
 
   * Http: probe the CA bundle without throwing on an unreadable path
