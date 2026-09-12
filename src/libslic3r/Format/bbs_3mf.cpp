@@ -9264,9 +9264,16 @@ bool has_restore_data(std::string & path, std::string& origin)
     // overload reports false instead.
     boost::system::error_code ec;
     if (boost::filesystem::exists(path + "/lock.txt", ec)) {
+        // A lock that cannot be interpreted must not be reported as "nothing to
+        // restore": the caller removes the backup directory unless origin is
+        // "<lock>" (see Plater.cpp), so every way of failing to read this file
+        // claims the lock instead. Declining a restore is recoverable, deleting a
+        // backup that was never examined is not. save_string_file() truncates and
+        // then writes, so a crash or a full disk mid-write leaves a zero-length
+        // lock.txt, which reaches lexical_cast as an empty string.
         std::string pid;
-        load_string_file(path + "/lock.txt", pid);
         try {
+            load_string_file(path + "/lock.txt", pid);
             if (get_process_name(boost::lexical_cast<int>(pid)) ==
                 get_process_name(0)) {
                 origin = "<lock>";
@@ -9274,12 +9281,21 @@ bool has_restore_data(std::string & path, std::string& origin)
             }
         }
         catch (...) {
+            origin = "<lock>";
             return false;
         }
     }
     std::string file3mf = path + "/.3mf";
-    if (!boost::filesystem::exists(file3mf, ec))
+    if (!boost::filesystem::exists(file3mf, ec)) {
+        // A path that is simply absent is a stale backup and stays collectable, so the
+        // caller may remove it. A probe that could not answer must not: ec carries
+        // ENOENT/ENOTDIR for "not there" as well as the return value, so only a
+        // different error means "could not look".
+        if (ec && ec != boost::system::errc::no_such_file_or_directory &&
+                  ec != boost::system::errc::not_a_directory)
+            origin = "<lock>";
         return false;
+    }
     try {
         if (boost::filesystem::exists(path + "/origin.txt", ec))
             load_string_file(path + "/origin.txt", origin);

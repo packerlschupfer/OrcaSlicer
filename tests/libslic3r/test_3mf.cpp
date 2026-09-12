@@ -12,6 +12,13 @@
 
 #include "test_utils.hpp"
 
+#include <fstream>
+#include <boost/nowide/fstream.hpp>
+
+#ifndef _WIN32
+#include <unistd.h>     // geteuid
+#endif
+
 #include <boost/filesystem/operations.hpp>
 
 #include <catch2/catch_tostring.hpp>
@@ -589,4 +596,96 @@ SCENARIO("Mixed-color filament setup and painting round-trip through a .3mf", "[
             delete plate; // store_bbs_3mf does not take ownership of the source plate
         }
     }
+}
+
+TEST_CASE("has_restore_data decides a crashed session's backup by its lock", "[3mf]")
+{
+    // has_restore_data() only tests that <dir>/.3mf exists, so an empty file is a
+    // sufficient stand-in for a recoverable project.
+    ScopedTemporaryDir backup_dir("orca_restore");
+    const std::string  dir  = backup_dir.string();
+    const std::string  lock = dir + "/lock.txt";
+    { boost::nowide::ofstream project(dir + "/.3mf"); }
+    REQUIRE(boost::filesystem::exists(dir + "/.3mf"));
+
+    auto write_lock = [&lock](const std::string &contents) {
+        boost::nowide::ofstream f(lock, std::ios::binary);
+        f.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+    };
+    // A pid that is practically never live, so get_process_name() returns empty and the
+    // lock reads as stale rather than as held by this very process.
+    const std::string dead_pid = "4194303";
+
+    SECTION("a complete backup with no lock is offered for restore") {
+        std::string path = dir, origin;
+        REQUIRE(Slic3r::has_restore_data(path, origin));
+        REQUIRE(path == dir + "/.3mf");
+    }
+
+    SECTION("a lock held by no live process does not block the restore") {
+        write_lock(dead_pid);
+        std::string path = dir, origin;
+        REQUIRE(Slic3r::has_restore_data(path, origin));
+    }
+
+    SECTION("a backup with no project data stays collectable") {
+        // Guards the other arm of the same decision: an absent .3mf must leave origin
+        // empty so the caller can still collect a stale backup directory. Dropping that
+        // exemption is how a "safe" guard turns into a directory that is never cleaned.
+        boost::filesystem::remove(dir + "/.3mf");
+        std::string path = dir, origin;
+        REQUIRE_FALSE(Slic3r::has_restore_data(path, origin));
+        REQUIRE(origin.empty());
+    }
+
+    SECTION("a zero-length lock claims the lock instead of discarding the backup") {
+        write_lock("");
+        std::string path = dir, origin;
+        REQUIRE_FALSE(Slic3r::has_restore_data(path, origin));
+        REQUIRE(origin == "<lock>");
+    }
+
+    SECTION("a lock holding something other than a pid claims the lock") {
+        write_lock("not-a-pid");
+        std::string path = dir, origin;
+        REQUIRE_FALSE(Slic3r::has_restore_data(path, origin));
+        REQUIRE(origin == "<lock>");
+    }
+
+#ifndef _WIN32
+    SECTION("a lock that cannot be read claims the lock") {
+        // Skip rather than pass vacuously: root ignores the permission bits, so the
+        // denial this case depends on does not exist there.
+        if (::geteuid() == 0)
+            SKIP("root bypasses the read-permission denial this case depends on");
+        write_lock(dead_pid);
+        boost::system::error_code perm_ec;
+        boost::filesystem::permissions(lock, boost::filesystem::perms::no_perms, perm_ec);
+        if (perm_ec)
+            SKIP("this filesystem does not honour chmod: " + perm_ec.message());
+
+        std::string path = dir, origin;
+        REQUIRE_FALSE(Slic3r::has_restore_data(path, origin));
+        REQUIRE(origin == "<lock>");
+    }
+
+    SECTION("a backup whose directory cannot be probed claims the lock") {
+        if (::geteuid() == 0)
+            SKIP("root bypasses the directory-permission denial this case depends on");
+        boost::system::error_code perm_ec;
+        boost::filesystem::permissions(dir, boost::filesystem::perms::no_perms, perm_ec);
+        if (perm_ec)
+            SKIP("this filesystem does not honour chmod: " + perm_ec.message());
+
+        // Restore the permissions BEFORE asserting. remove_all() cannot delete a
+        // directory it may not search, so a failed assertion here would leave the
+        // temporary directory behind permanently rather than having it cleaned up.
+        std::string path = dir, origin;
+        const bool  offered = Slic3r::has_restore_data(path, origin);
+        boost::filesystem::permissions(dir, boost::filesystem::perms::owner_all, perm_ec);
+
+        REQUIRE_FALSE(offered);
+        REQUIRE(origin == "<lock>");
+    }
+#endif
 }
