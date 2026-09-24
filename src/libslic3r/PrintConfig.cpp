@@ -12092,17 +12092,25 @@ CLIActionsConfigDef::CLIActionsConfigDef()
 
     def = this->add("paint", coString);
     def->label = L("Paint from spec (JSON to stdout, model mutated in place)");
-    def->tooltip = L("Apply a JSON spec of ordered (kind, predicate) regions to a "
+    def->tooltip = L("Apply a JSON spec of ordered (kind, selector) regions to a "
                      "paint layer on the loaded model. The spec's \"layer\" field "
                      "selects supports (default) / seam / mmu / fuzzy; \"frame\" "
-                     "selects mesh_local (default) or world coords. Each region "
-                     "matches source triangles by bbox / z_min / z_max / "
-                     "normal_below (n·(-Z) ≥ threshold ⇒ facing down); optional "
-                     "reachable_from [x,y,z] flood-fills from the nearest triangle, "
-                     "and connected_component keeps only the largest connected "
-                     "match subset. Emits a coverage report as JSON. Combine with "
-                     "--export-3mf to save, or --slice to bake into gcode. Under "
-                     "--strict, any region matching 0 facets makes the action fail.");
+                     "selects mesh_local (default) or world coords. A region "
+                     "selects either whole source triangles, by bbox / z_min / "
+                     "z_max / normal_below (n·(-Z) ≥ threshold ⇒ facing down), with "
+                     "optional reachable_from [x,y,z] to flood-fill from the nearest "
+                     "triangle and connected_component to keep only the largest "
+                     "connected match subset; or a 2D shape projected onto the mesh "
+                     "-- line {a,b,width_mm} / rect {min,max} / polygon {points} -- "
+                     "which is sampled every sample_spacing_mm along \"project\" "
+                     "(-Z default, +Z) and splatted with a cursor of "
+                     "cursor_radius_mm. A shape SUBDIVIDES the triangles it covers, "
+                     "so it can paint a small patch of a large facet, which a "
+                     "whole-triangle selector cannot; shapes currently require "
+                     "frame=mesh_local. Emits a coverage report as JSON. Combine "
+                     "with --export-3mf to save, or --slice to bake into gcode. "
+                     "Under --strict, any region matching 0 facets makes the action "
+                     "fail.");
     def->set_default_value(new ConfigOptionString(""));
 
     def = this->add("export_settings", coString);
