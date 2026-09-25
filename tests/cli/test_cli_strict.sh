@@ -98,7 +98,10 @@ MODEL="$WORK/capital.stl"
 run() {
     local out="$WORK/$1"; shift
     mkdir -p "$out"
+    # This fork's --strict also refuses to guess the bed type, so name one explicitly;
+    # the synthetic printer above declares none and the check fires before slicing.
     timeout 300 "$BIN" --datadir "$WORK/datadir" --load-settings "$WORK/machine.json;$PROCESS" \
+        --curr-bed-type "High Temp Plate" \
         "$@" --slice 0 --outputdir "$out" "$MODEL" > "$out/log" 2>&1
     echo $? > "$out/status"
 }
