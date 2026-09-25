@@ -235,6 +235,14 @@ bool cli_zladder_get_calib_params(CLICalibType type, const CLIZLadderParams &par
 // relevant flags, example command. Backs the --list-calibrate-types action.
 void cli_emit_calib_types_json(std::ostream &out);
 
+// Strict-mode status: did the last cli_apply_*_calib call return early via a
+// defensive guard (missing config field, invalid pass, empty model, ...)?
+// OrcaSlicer.cpp checks this after each cli_apply_* and exits non-zero when
+// --strict is on. Reset to "ok" automatically at the top of each cli_apply_*.
+bool cli_calib_last_call_succeeded();
+void cli_calib_reset_status();
+void cli_calib_mark_failed();
+
 }
 
 #endif

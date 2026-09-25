@@ -4176,6 +4176,16 @@ int CLI::run(int argc, char **argv)
             break;
         }
 
+        //ORCA: --strict — if the calib generator hit a defensive guard (missing config field
+        //      etc., see the cli_calib_mark_failed sites in CalibCLI.cpp), fail loudly instead
+        //      of slicing a half-prepared calibration model.
+        if (sliced_info.strict_mode && !Slic3r::cli_calib_last_call_succeeded()) {
+            BOOST_LOG_TRIVIAL(error) << "--strict: calibration prep failed (see prior error). "
+                                        "Refusing to slice an incomplete calibration model.";
+            record_exit_reson(outfile_dir, CLI_INVALID_PARAMS, 0, cli_errors[CLI_INVALID_PARAMS], sliced_info);
+            flush_and_exit(CLI_INVALID_PARAMS);
+        }
+
         //ORCA: center the calibration model on the bed (matches the GUI's add_model behavior).
         //      Compute the bed center from current_printable_area (loaded earlier), then translate
         //      every object's instance offset so that the combined bounding box centroid lands at
@@ -6775,7 +6785,7 @@ int CLI::run(int argc, char **argv)
                     all_ok = false;
             }
             boost::nowide::cout.flush();
-            if (strict_mode && !all_ok) {
+            if (sliced_info.strict_mode && !all_ok) {
                 record_exit_reson(outfile_dir, CLI_INVALID_PARAMS, 0,
                                   cli_errors[CLI_INVALID_PARAMS], sliced_info);
                 flush_and_exit(CLI_INVALID_PARAMS);
@@ -6799,7 +6809,7 @@ int CLI::run(int argc, char **argv)
                     all_ok = false;
             }
             boost::nowide::cout.flush();
-            if (strict_mode && !all_ok) {
+            if (sliced_info.strict_mode && !all_ok) {
                 record_exit_reson(outfile_dir, CLI_INVALID_PARAMS, 0,
                                   cli_errors[CLI_INVALID_PARAMS], sliced_info);
                 flush_and_exit(CLI_INVALID_PARAMS);
@@ -7616,7 +7626,9 @@ int CLI::run(int argc, char **argv)
                                        //      perimeters) so the print peels off the bed as one connected
                                        //      mesh. Demote the conflict to a warning for calibration runs
                                        //      so the slice succeeds.
-                                       if (cli_calib_type != Slic3r::CLICalibType::NoCalib) {
+                                       //      --strict re-elevates this so a CI or scripted pipeline that
+                                       //      should never ship a subtly broken slice gets a loud exit.
+                                       if (cli_calib_type != Slic3r::CLICalibType::NoCalib && !sliced_info.strict_mode) {
                                            BOOST_LOG_TRIVIAL(warning) << "plate "<< index+1<< ": ignoring gcode-path conflict — --calibrate-type plates expect overlapping struts: " << conflict_result << std::endl;
                                        } else {
                                            BOOST_LOG_TRIVIAL(error) << "plate "<< index+1<< ": found slicing result conflict!"<< std::endl;
