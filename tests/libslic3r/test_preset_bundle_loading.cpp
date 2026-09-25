@@ -5481,6 +5481,7 @@ TEST_CASE("Config import confines zip entries, preset names and bundle ids to th
         CHECK(import(zip).empty());
         CHECK_FALSE(any_filename_contains(temp_dir.path(), "bundle-escape"));
     }
+}
 
 TEST_CASE("A user preset inheriting a sibling in the same directory loads", "[Preset][Bundle][Regression]")
 {
