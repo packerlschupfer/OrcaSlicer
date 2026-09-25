@@ -768,8 +768,6 @@ set(SLIC3R_GUI_SOURCES
     Utils/Moonraker.hpp
     Utils/CalibCLI.cpp
     Utils/CalibCLI.hpp
-    Utils/MeshOrient.cpp
-    Utils/MeshOrient.hpp
     Utils/BBLCloudServiceAgent.cpp
     Utils/BBLCloudServiceAgent.hpp
     Utils/BBLPrinterAgent.cpp

@@ -58,7 +58,6 @@ using namespace nlohmann;
 #include "libslic3r/Preset.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "slic3r/Utils/CalibCLI.hpp"
-#include "slic3r/Utils/MeshOrient.hpp"
 #include "libslic3r/Geometry.hpp"
 #include "libslic3r/GCode.hpp"
 #include "libslic3r/Model.hpp"
