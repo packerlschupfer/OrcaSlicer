@@ -1,3 +1,38 @@
+orcaslicer-dev (2.4.0~dev-2026.09.25-1) unstable; urgency=medium
+
+  * Rebase onto upstream main 87a5d20d4c.
+
+    The fork was 719 commits behind. 66 fork commits went in: 54 replayed, 9
+    dropped because upstream had merged the same work through our own PRs
+    (--inspect-paint #14608, --strict #14601, --ground-* and --inspect-mesh
+    #15073, the compatible_printers_condition series #15449, and the
+    different_settings_to_system pair #15595/#15642), and 2 that cherry-picked
+    empty for the same reason. 56 fork-only CLI options carried over.
+
+  * CLI: --ground-largest-face no longer takes a value.
+
+    Upstream's review of #15073 made it a plain boolean, so the old
+    "--ground-largest-face 1" spelling now leaves the 1 to be read as an input
+    file and the run fails with -3 on a missing file. Use the bare flag, or
+    --ground-largest-face=1. The --lay-flat and --center-on-bed aliases were
+    dropped in the same review.
+
+  * CLI: restore the --strict calibration guards the rebase dropped.
+
+    The commit that carried them also carried option registrations upstream now
+    owns, so it was dropped as superseded and took with it the calib failure
+    tracker, the guard against slicing a half-prepared calibration model, and
+    --strict re-elevating a calibration g-code-path conflict. Restored against
+    upstream's sliced_info.strict_mode shape.
+
+  * Build: dependencies rebuilt with SLIC3R_CAD on.
+
+    Upstream enables the Design tab by default, which needs libslvs and OCCT's
+    ModelingAlgorithms module (libTKFillet, libTKOffset) -- none of which the
+    previous dependency prefix had.
+
+ -- Helmut Adrigan <helmut.adrigan@chello.at>  Fri, 25 Sep 2026 09:58:11 +0200
+
 orcaslicer-dev (2.4.0~dev-2026.09.12-2) unstable; urgency=medium
 
   * Plugins: find the bundled uv and Python without throwing, shipped copies
