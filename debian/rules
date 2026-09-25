@@ -75,4 +75,12 @@ override_dh_makeshlibs:
 	dh_makeshlibs -X/orca-runtime/
 
 override_dh_shlibdeps:
-	dh_shlibdeps -X/orca-runtime/
+	# The libs in lib/orca-runtime/ are shipped BY this package (libavcodec,
+	# libavutil, libexpat, ... 25 of them) and the launcher puts that directory
+	# on LD_LIBRARY_PATH, so the binary must not gain a system dependency on
+	# them. dpkg-shlibdeps resolves them through the binary's RUNPATH into the
+	# deps build tree, which belongs to no package, and errors out; whether it
+	# does depends on which deps that host happens to have built, so the same
+	# source packaged fine elsewhere. Ignore the missing info rather than let
+	# the result vary by build host.
+	dh_shlibdeps -X/orca-runtime/ -- --ignore-missing-info
