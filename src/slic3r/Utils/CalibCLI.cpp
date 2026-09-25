@@ -177,10 +177,23 @@ static void filter_flowrate_blocks(Model &model, int max_blocks, double max_modi
 //      which is GUI-bound; here we apply the same scale factors directly via ModelObject::scale().
 //      Every per-object config setter is line-for-line identical to the GUI implementation so the
 //      sliced G-code is byte-equivalent to a GUI wizard run with the same parameters.
+//ORCA: --strict status. Reset at the start of each cli_apply_*; defensive
+//      returns (missing field, empty model, invalid pass, ...) flip it to
+//      failed. OrcaSlicer.cpp checks after each calib dispatch and exits
+//      non-zero when --strict is on.
+namespace {
+bool g_last_calib_succeeded = true;
+}
+bool cli_calib_last_call_succeeded() { return g_last_calib_succeeded; }
+void cli_calib_reset_status()        { g_last_calib_succeeded = true; }
+void cli_calib_mark_failed()         { g_last_calib_succeeded = false; }
+
 void cli_apply_flowrate_calib(Model &model, DynamicPrintConfig &full_config, const CLIFlowRateParams &params)
 {
+    cli_calib_reset_status();
     if (params.pass != 1 && params.pass != 2) {
         BOOST_LOG_TRIVIAL(error) << "cli_apply_flowrate_calib: invalid pass " << params.pass;
+        cli_calib_mark_failed();
         return;
     }
 
@@ -230,6 +243,7 @@ void cli_apply_flowrate_calib(Model &model, DynamicPrintConfig &full_config, con
             << "` is missing from the resolved config. This usually means a preset's "
                "`inherits` chain didn't resolve — pass `--datadir <orcaslicer-config-dir>` "
                "so system presets can be found.";
+        cli_calib_mark_failed();
     };
 
     const ConfigOptionFloats *nozzle_diameter_config = full_config.option<ConfigOptionFloats>("nozzle_diameter");
