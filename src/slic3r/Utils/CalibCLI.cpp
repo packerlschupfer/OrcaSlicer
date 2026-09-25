@@ -2190,8 +2190,7 @@ void cli_build_zladder(Model &model, DynamicPrintConfig &full_config,
 }
 
 //ORCA: --list-calibrate-types JSON emitter. Hand-formatted (same approach as
-//      MeshOrient::inspect_to_json and the calib sidecar emitters — small,
-//      flat, no JSON-library dependency). The table is static + intentionally
+//      the calib sidecar emitters — small, flat, no JSON-library dependency). The table is static + intentionally
 //      lives next to the parser (cli_calib_type_from_string above) so adding
 //      a new --calibrate-type means touching exactly this file in both places.
 void cli_emit_calib_types_json(std::ostream &out)
