@@ -43,6 +43,10 @@ enum class CLICalibType {
 // Returns CLICalibType::None on unknown string.
 CLICalibType cli_calib_type_from_string(const std::string &name);
 
+// The --calibrate-type spelling of a type, the inverse of cli_calib_type_from_string().
+// Returns "none" for NoCalib.
+const char* cli_calib_type_to_string(CLICalibType type);
+
 // Resolve the model resource path inside resources_dir() for a given calibration type.
 // Returns empty string for None.
 std::string cli_calib_resource_path(CLICalibType type);

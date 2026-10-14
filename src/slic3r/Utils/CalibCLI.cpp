@@ -2301,4 +2301,6 @@ void cli_emit_calib_types_json(std::ostream &out)
     out << "}\n";
 }
 
+const char* cli_calib_type_to_string(CLICalibType type) { return calib_type_name(type); }
+
 }

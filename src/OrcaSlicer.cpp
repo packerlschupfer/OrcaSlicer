@@ -1627,7 +1627,7 @@ int CLI::run(int argc, char **argv)
         cli_calib_type = Slic3r::cli_calib_type_from_string(opt->value);
         if (cli_calib_type == Slic3r::CLICalibType::NoCalib) {
             boost::nowide::cerr << "Invalid --calibrate-type value: " << opt->value
-                << ". Expected one of: flow-yolo-recommended, flow-yolo-perfectionist, flow-pass1, flow-pass2, z-offset-pattern, temp-tower, vol-speed-tower, pa-tower, retraction-tower, vfa-tower, z-ladder-banded, z-ladder-ramp." << std::endl;
+                << ". Expected one of: flow-yolo-recommended, flow-yolo-perfectionist, flow-yolo-coarse, flow-pass1, flow-pass2, z-offset-pattern, temp-tower, vol-speed-tower, pa-tower, retraction-tower, vfa-tower, z-ladder-banded, z-ladder-ramp." << std::endl;
             record_exit_reson(outfile_dir, CLI_INVALID_PARAMS, 0, cli_errors[CLI_INVALID_PARAMS], sliced_info);
             flush_and_exit(CLI_INVALID_PARAMS);
         }
