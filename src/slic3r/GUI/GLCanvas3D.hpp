@@ -1177,6 +1177,10 @@ public:
     void set_section_view_ratio(double ratio);
     void toggle_section_view();
     void align_section_view_to_camera();
+    // ORCA: a cut direction the camera does not own — a world-Z "horizontal cut", or the
+    //       current one reversed so the hidden half becomes the visible one.
+    void set_section_view_normal(const Vec3d& normal);
+    void flip_section_view_normal();
     void share_section_view(const GLCanvas3D& owner) { m_section_view = owner.m_section_view; }
 
     void toggle_world_axes_visibility(bool force_show = false);

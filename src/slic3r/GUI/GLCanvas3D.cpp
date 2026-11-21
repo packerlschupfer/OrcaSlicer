@@ -2601,6 +2601,26 @@ void GLCanvas3D::align_section_view_to_camera()
     _on_section_view_changed();
 }
 
+// ORCA: Follow camera would overwrite a fixed normal on the very next frame, so choosing one
+//       turns it off. A zero normal is what "never aimed" means and is not a direction.
+void GLCanvas3D::set_section_view_normal(const Vec3d& normal)
+{
+    if (normal.isZero())
+        return;
+    m_section_view->follow_camera = false;
+    m_section_view->normal        = normal.normalized();
+    _on_section_view_changed();
+}
+
+// ORCA: cut from the other side. Before the first aim there is no normal to reverse, so take
+//       the camera's and reverse that, which is what the user sees looking at an uncut object.
+void GLCanvas3D::flip_section_view_normal()
+{
+    if (m_section_view->normal.isZero())
+        align_section_view_to_camera();
+    set_section_view_normal(-m_section_view->normal);
+}
+
 void GLCanvas3D::_on_section_view_changed()
 {
     m_gizmos.update_section_view();
@@ -12195,6 +12215,14 @@ void GLCanvas3D::_render_section_view_panel(const ImVec2& bottom_left)
     if (imgui.button(_L("Set viewing angle")))
         align_section_view_to_camera();
     imgui.disabled_end();
+
+    ImGui::SameLine();
+    if (imgui.button(_L("Horizontal cut")))
+        set_section_view_normal(Vec3d::UnitZ());
+
+    ImGui::SameLine();
+    if (imgui.button(_L("Flip")))
+        flip_section_view_normal();
 
     ImGui::SameLine();
     if (imgui.bbl_checkbox(_L("Follow camera"), m_section_view->follow_camera))
