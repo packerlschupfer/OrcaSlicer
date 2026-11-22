@@ -1,3 +1,39 @@
+orcaslicer-dev (2.4.0~dev-2026.11.22-1) unstable; urgency=medium
+
+  * Rebase onto upstream main a8a597c6d5.
+
+    The fork was 30937 commits behind. 62 fork commits were replayed as 57,
+    with 4 dropped: three superseded by our own merged PRs -- the CA-bundle
+    probe (#15654, upstream 02b0d2b614), the config-path probe (#15669,
+    cb752d38a3) and the 3mf backup lock (#16431, 16efd3458b, which upstream
+    carries verbatim) -- and one that cherry-picked empty because it repaired
+    an earlier rebase's mistake that does not exist on this base.
+
+    Option-set check: 56 fork-only CLI options carried over, 0 lost.
+    `silent_mode` reads as missing but was never ours; upstream removed it in
+    19eb55d3e5.
+
+  * GUI: the fork's per-gizmo "Section view" block is gone, redesigned onto
+    upstream's central section view.
+
+    Upstream removed the per-gizmo blocks and gave the canvas one SectionView
+    with a ratio and a normal. Horizontal cut and Flip are now buttons on that
+    panel, so they work for every gizmo instead of three painters, and Flip
+    reverses any normal rather than only the vertical one. Both clear Follow
+    camera, which would otherwise overwrite the chosen direction.
+
+  * Preset: the same-directory inheritance fix is rewritten for upstream's new
+    loader and filed as #17782. load_presets() now also sorts the directory,
+    so preset load order no longer depends on the filesystem.
+
+  * Picks up three upstream Wayland/GL fixes this box wanted: the WebKit
+    shared-memory transport (#17399), which is the actual cure for the GUI
+    glitch that WEBKIT_DMABUF_RENDERER_FORCE_SHM=1 was working around, the
+    OpenGL-context failure path (#17441) and the wxWidgets Wayland seat
+    release (#17015).
+
+ -- Helmut Adrigan <helmut.adrigan@chello.at>  Sun, 22 Nov 2026 01:40:04 +0100
+
 orcaslicer-dev (2.4.0~dev-2026.09.25-1) unstable; urgency=medium
 
   * Rebase onto upstream main 87a5d20d4c.
